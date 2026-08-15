@@ -1,0 +1,4330 @@
+{
+  "report": "reranking_comparison",
+  "phase": "C",
+  "timestamp": "2026-08-15T13:10:04.349782+00:00",
+  "dataset": {
+    "path": "src\\evaluation\\golden_dataset.json",
+    "version": "2026-08-15_golden_v1",
+    "total_cases": 10,
+    "scored_cases": 9,
+    "abstention_cases_excluded": 1
+  },
+  "corpus": {
+    "chunks_indexed": 22,
+    "documents": 6,
+    "policy_ids": {
+      "damaged_product_policy.txt": "DMG-003",
+      "delivery_policy.txt": "DEL-004",
+      "payment_failure_faq.txt": "PAY-005",
+      "product_manual_example.txt": "MAN-006",
+      "refund_policy.txt": "REF-001",
+      "return_policy.txt": "RET-002"
+    }
+  },
+  "model": {
+    "configured": "BAAI/bge-reranker-v2-m3",
+    "loaded": "BAAI/bge-reranker-v2-m3",
+    "fallback_configured": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "fallback_used": false,
+    "device": "cpu"
+  },
+  "model_configuration": {
+    "enabled": true,
+    "configured_model": "BAAI/bge-reranker-v2-m3",
+    "fallback_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "loaded_model": "BAAI/bge-reranker-v2-m3",
+    "load_error": null,
+    "device": "cpu",
+    "candidate_top_k": 20,
+    "final_top_k": 5,
+    "batch_size": 16,
+    "max_length": 512,
+    "input_pair": "(original query, candidate chunk content)",
+    "score_normalisation": "sigmoid over raw logits, computed in RAGuard",
+    "activation_parameter": "activation_fn",
+    "tie_break": "ascending chunk_id",
+    "scores_preserved": [
+      "sparse_score",
+      "dense_score",
+      "fusion_score",
+      "rerank_score",
+      "normalised_rerank_score",
+      "retriever_ranks"
+    ]
+  },
+  "retrieval_configurations": {
+    "bm25_only": {
+      "description": "BM25 only, no fusion, no deduplication",
+      "top_k": 20,
+      "deduplication_applied": false
+    },
+    "vector_only": {
+      "description": "pgvector dense search only, no fusion, no deduplication",
+      "top_k": 20,
+      "deduplication_applied": false
+    },
+    "hybrid_rrf": {
+      "description": "Phase B baseline: BM25 + dense, RRF, deduplication",
+      "top_k": 20,
+      "deduplication_applied": true,
+      "retrieval": {
+        "strategy": "hybrid_bm25_dense_rrf",
+        "dense_top_k": 20,
+        "sparse_top_k": 20,
+        "final_top_k": 20,
+        "reranking_applied": false
+      },
+      "bm25": {
+        "library": "rank_bm25",
+        "algorithm": "BM25Okapi",
+        "k1": 1.5,
+        "b": 0.75,
+        "epsilon": 0.25,
+        "corpus_size": 22,
+        "tokenizer": "lowercase; identifiers preserved; hyphenated sub-tokens expanded",
+        "stopwords": [
+          "a",
+          "an",
+          "and",
+          "are",
+          "for",
+          "in",
+          "is",
+          "it",
+          "of",
+          "on",
+          "or",
+          "the",
+          "to"
+        ],
+        "zero_score_hits_dropped": true
+      },
+      "vector": {
+        "embedding_model": "BAAI/bge-m3",
+        "dimension": 1024,
+        "metric": "cosine",
+        "operator": "<=>",
+        "index": "hnsw (vector_cosine_ops)",
+        "normalised_embeddings": true,
+        "top_k": 20
+      },
+      "rrf": {
+        "algorithm": "reciprocal_rank_fusion",
+        "formula": "sum(1 / (k + rank))",
+        "k": 60,
+        "rank_origin": 1,
+        "tie_break": "ascending chunk_id",
+        "scores_preserved": [
+          "dense_score",
+          "sparse_score",
+          "fusion_score"
+        ],
+        "ranks_preserved": true
+      },
+      "deduplication": {
+        "enabled": true,
+        "similarity": "jaccard over BM25 token sets",
+        "near_duplicate_threshold": 0.9,
+        "adjacent_threshold": 0.7,
+        "max_adjacent_run": 5,
+        "order": "rank order preserved; highest-ranked duplicate survives"
+      }
+    },
+    "hybrid_rrf_rerank": {
+      "description": "Phase B candidates rescored by the cross-encoder",
+      "candidate_top_k": 20,
+      "top_k": 5,
+      "deduplication_applied": true
+    }
+  },
+  "metric_note": "All metrics are cut at k <= 5. Configuration D returns 5 results by design, so a metric at k > 5 would measure truncation, not ranking.",
+  "reranker_used": true,
+  "metrics": {
+    "bm25_only": {
+      "hit_rate_at_1": 0.6667,
+      "hit_rate_at_3": 0.7778,
+      "hit_rate_at_5": 0.7778,
+      "recall_at_5": 0.7778,
+      "mrr_at_5": 0.7222
+    },
+    "vector_only": {
+      "hit_rate_at_1": 0.8889,
+      "hit_rate_at_3": 0.8889,
+      "hit_rate_at_5": 1.0,
+      "recall_at_5": 1.0,
+      "mrr_at_5": 0.9111
+    },
+    "hybrid_rrf": {
+      "hit_rate_at_1": 0.7778,
+      "hit_rate_at_3": 0.8889,
+      "hit_rate_at_5": 1.0,
+      "recall_at_5": 1.0,
+      "mrr_at_5": 0.8611
+    },
+    "hybrid_rrf_rerank": {
+      "hit_rate_at_1": 0.7778,
+      "hit_rate_at_3": 1.0,
+      "hit_rate_at_5": 1.0,
+      "recall_at_5": 1.0,
+      "mrr_at_5": 0.8704
+    }
+  },
+  "watched_cases": {
+    "GC-002": {
+      "question": "I bought a laptop three weeks ago, can I still return it?",
+      "expected_sources": [
+        "return_policy.txt"
+      ],
+      "before": {
+        "config": "hybrid_rrf",
+        "first_relevant_rank": 2,
+        "top_5_policy_ids": [
+          "REF-001",
+          "RET-002",
+          "RET-002",
+          "DMG-003",
+          "DEL-004"
+        ],
+        "metrics": {
+          "hit_rate_at_1": 0.0,
+          "hit_rate_at_3": 1.0,
+          "hit_rate_at_5": 1.0,
+          "recall_at_5": 1.0,
+          "mrr_at_5": 0.5
+        }
+      },
+      "after": {
+        "config": "hybrid_rrf_rerank",
+        "first_relevant_rank": 3,
+        "top_5_policy_ids": [
+          "REF-001",
+          "REF-001",
+          "RET-002",
+          "RET-002",
+          "RET-002"
+        ],
+        "metrics": {
+          "hit_rate_at_1": 0.0,
+          "hit_rate_at_3": 1.0,
+          "hit_rate_at_5": 1.0,
+          "recall_at_5": 1.0,
+          "mrr_at_5": 0.3333
+        },
+        "reranker_used": true
+      },
+      "rank_change": "regressed: 2 -> 3"
+    },
+    "GC-010": {
+      "question": "The espresso machine arrived cracked. Do I have to pay to send it back?",
+      "expected_sources": [
+        "damaged_product_policy.txt"
+      ],
+      "before": {
+        "config": "hybrid_rrf",
+        "first_relevant_rank": 4,
+        "top_5_policy_ids": [
+          "MAN-006",
+          "MAN-006",
+          "MAN-006",
+          "DMG-003",
+          "DMG-003"
+        ],
+        "metrics": {
+          "hit_rate_at_1": 0.0,
+          "hit_rate_at_3": 0.0,
+          "hit_rate_at_5": 1.0,
+          "recall_at_5": 1.0,
+          "mrr_at_5": 0.25
+        }
+      },
+      "after": {
+        "config": "hybrid_rrf_rerank",
+        "first_relevant_rank": 2,
+        "top_5_policy_ids": [
+          "REF-001",
+          "DMG-003",
+          "DMG-003",
+          "RET-002",
+          "RET-002"
+        ],
+        "metrics": {
+          "hit_rate_at_1": 0.0,
+          "hit_rate_at_3": 1.0,
+          "hit_rate_at_5": 1.0,
+          "recall_at_5": 1.0,
+          "mrr_at_5": 0.5
+        },
+        "reranker_used": true
+      },
+      "rank_change": "improved: 4 -> 2"
+    }
+  },
+  "verdict": {
+    "mrr_at_5_improved": true,
+    "mrr_at_5_before": 0.8611,
+    "mrr_at_5_after": 0.8704,
+    "mrr_at_5_delta": 0.0093,
+    "hit_rate_at_5_maintained": true,
+    "hit_rate_at_5_before": 1.0,
+    "hit_rate_at_5_after": 1.0,
+    "recall_at_5_maintained": true,
+    "recall_at_5_before": 1.0,
+    "recall_at_5_after": 1.0,
+    "hit_rate_at_1_before": 0.7778,
+    "hit_rate_at_1_after": 0.7778,
+    "improved_cases": [
+      {
+        "case_id": "GC-010",
+        "before_rank": 4,
+        "after_rank": 2
+      }
+    ],
+    "regressed_cases": [
+      {
+        "case_id": "GC-002",
+        "before_rank": 2,
+        "after_rank": 3
+      }
+    ],
+    "no_regressions": false,
+    "reranking_is_an_improvement": false
+  },
+  "errors": [],
+  "cases": [
+    {
+      "case_id": "GC-001",
+      "question": "How long does a refund take to reach my credit card?",
+      "category": "refund",
+      "difficulty": "easy",
+      "should_abstain": false,
+      "expected_sources": [
+        "refund_policy.txt"
+      ],
+      "configs": {
+        "bm25_only": {
+          "config": "bm25_only",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "REF-001",
+            "REF-001",
+            "REF-001",
+            "DMG-003",
+            "PAY-005",
+            "RET-002",
+            "PAY-005",
+            "PAY-005",
+            "DMG-003",
+            "PAY-005"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 40,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 4.9574,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 2,
+              "chunk_id": 41,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 3,
+              "bm25_score": 3.4682,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 3,
+              "chunk_id": 39,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 3.4242,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 4,
+              "chunk_id": 26,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 3,
+              "bm25_score": 2.7407,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 5,
+              "chunk_id": 34,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 3,
+              "bm25_score": 2.5112,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "vector_only": {
+          "config": "vector_only",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "REF-001",
+            "REF-001",
+            "RET-002",
+            "REF-001",
+            "REF-001",
+            "PAY-005",
+            "PAY-005",
+            "PAY-005",
+            "RET-002",
+            "RET-002"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 39,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": null,
+              "vector_score": 0.7677,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 2,
+              "chunk_id": 38,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 0,
+              "bm25_score": null,
+              "vector_score": 0.6873,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 3,
+              "chunk_id": 42,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 0,
+              "bm25_score": null,
+              "vector_score": 0.656,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 4,
+              "chunk_id": 41,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 3,
+              "bm25_score": null,
+              "vector_score": 0.6384,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 5,
+              "chunk_id": 40,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": null,
+              "vector_score": 0.6329,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "hybrid_rrf": {
+          "config": "hybrid_rrf",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "REF-001",
+            "REF-001",
+            "REF-001",
+            "PAY-005",
+            "REF-001",
+            "PAY-005",
+            "RET-002",
+            "RET-002",
+            "PAY-005",
+            "DMG-003"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 39,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 3.4242,
+              "vector_score": 0.7677,
+              "rrf_score": 0.032266,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 1,
+                "sparse": 3
+              }
+            },
+            {
+              "rank": 2,
+              "chunk_id": 40,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 4.9574,
+              "vector_score": 0.6329,
+              "rrf_score": 0.031778,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 5,
+                "sparse": 1
+              }
+            },
+            {
+              "rank": 3,
+              "chunk_id": 41,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 3,
+              "bm25_score": 3.4682,
+              "vector_score": 0.6384,
+              "rrf_score": 0.031754,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 4,
+                "sparse": 2
+              }
+            },
+            {
+              "rank": 4,
+              "chunk_id": 34,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 3,
+              "bm25_score": 2.5112,
+              "vector_score": 0.6035,
+              "rrf_score": 0.03031,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 7,
+                "sparse": 5
+              }
+            },
+            {
+              "rank": 5,
+              "chunk_id": 38,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 0,
+              "bm25_score": 0.6944,
+              "vector_score": 0.6873,
+              "rrf_score": 0.030214,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 2,
+                "sparse": 11
+              }
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "hybrid_rrf_rerank": {
+          "config": "hybrid_rrf_rerank",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "REF-001",
+            "REF-001",
+            "REF-001",
+            "RET-002",
+            "REF-001"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 39,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 3.4242,
+              "vector_score": 0.7677,
+              "rrf_score": 0.032266,
+              "rerank_score": 1.1258,
+              "normalised_rerank_score": 0.7551,
+              "retriever_ranks": {
+                "dense": 1,
+                "sparse": 3
+              }
+            },
+            {
+              "rank": 2,
+              "chunk_id": 38,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 0,
+              "bm25_score": 0.6944,
+              "vector_score": 0.6873,
+              "rrf_score": 0.030214,
+              "rerank_score": -1.9737,
+              "normalised_rerank_score": 0.122,
+              "retriever_ranks": {
+                "dense": 2,
+                "sparse": 11
+              }
+            },
+            {
+              "rank": 3,
+              "chunk_id": 40,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 4.9574,
+              "vector_score": 0.6329,
+              "rrf_score": 0.031778,
+              "rerank_score": -2.829,
+              "normalised_rerank_score": 0.0558,
+              "retriever_ranks": {
+                "dense": 5,
+                "sparse": 1
+              }
+            },
+            {
+              "rank": 4,
+              "chunk_id": 42,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 0,
+              "bm25_score": 0.5822,
+              "vector_score": 0.656,
+              "rrf_score": 0.029762,
+              "rerank_score": -3.5308,
+              "normalised_rerank_score": 0.0284,
+              "retriever_ranks": {
+                "dense": 3,
+                "sparse": 12
+              }
+            },
+            {
+              "rank": 5,
+              "chunk_id": 41,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 3,
+              "bm25_score": 3.4682,
+              "vector_score": 0.6384,
+              "rrf_score": 0.031754,
+              "rerank_score": -3.9773,
+              "normalised_rerank_score": 0.0184,
+              "retriever_ranks": {
+                "dense": 4,
+                "sparse": 2
+              }
+            }
+          ],
+          "reranker_used": true,
+          "failure": null
+        }
+      }
+    },
+    {
+      "case_id": "GC-002",
+      "question": "I bought a laptop three weeks ago, can I still return it?",
+      "category": "return",
+      "difficulty": "medium",
+      "should_abstain": false,
+      "expected_sources": [
+        "return_policy.txt"
+      ],
+      "configs": {
+        "bm25_only": {
+          "config": "bm25_only",
+          "first_relevant_rank": 6,
+          "metrics": {
+            "hit_rate_at_1": 0.0,
+            "hit_rate_at_3": 0.0,
+            "hit_rate_at_5": 0.0,
+            "recall_at_5": 0.0,
+            "mrr_at_5": 0.0
+          },
+          "retrieved_policy_ids": [
+            "PAY-005",
+            "REF-001",
+            "DMG-003",
+            "DEL-004",
+            "DEL-004",
+            "RET-002",
+            "RET-002",
+            "RET-002",
+            "DMG-003",
+            "REF-001"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 33,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 2,
+              "bm25_score": 7.1185,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 2,
+              "chunk_id": 41,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 3,
+              "bm25_score": 3.0639,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 3,
+              "chunk_id": 24,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 2.4276,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 4,
+              "chunk_id": 28,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 2.3957,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 5,
+              "chunk_id": 30,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 3,
+              "bm25_score": 2.3294,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "vector_only": {
+          "config": "vector_only",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "RET-002",
+            "REF-001",
+            "REF-001",
+            "RET-002",
+            "DMG-003",
+            "REF-001",
+            "REF-001",
+            "DMG-003",
+            "RET-002",
+            "DEL-004"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 42,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 0,
+              "bm25_score": null,
+              "vector_score": 0.6204,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 2,
+              "chunk_id": 38,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 0,
+              "bm25_score": null,
+              "vector_score": 0.5889,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 3,
+              "chunk_id": 41,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 3,
+              "bm25_score": null,
+              "vector_score": 0.5838,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 4,
+              "chunk_id": 43,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": null,
+              "vector_score": 0.5663,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 5,
+              "chunk_id": 25,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": null,
+              "vector_score": 0.5635,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "hybrid_rrf": {
+          "config": "hybrid_rrf",
+          "first_relevant_rank": 2,
+          "metrics": {
+            "hit_rate_at_1": 0.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 0.5
+          },
+          "retrieved_policy_ids": [
+            "REF-001",
+            "RET-002",
+            "RET-002",
+            "DMG-003",
+            "DEL-004",
+            "PAY-005",
+            "DMG-003",
+            "REF-001",
+            "RET-002",
+            "DMG-003"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 41,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 3,
+              "bm25_score": 3.0639,
+              "vector_score": 0.5838,
+              "rrf_score": 0.032002,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 3,
+                "sparse": 2
+              }
+            },
+            {
+              "rank": 2,
+              "chunk_id": 42,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 0,
+              "bm25_score": 1.1212,
+              "vector_score": 0.6204,
+              "rrf_score": 0.031545,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 1,
+                "sparse": 6
+              }
+            },
+            {
+              "rank": 3,
+              "chunk_id": 43,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 0.8424,
+              "vector_score": 0.5663,
+              "rrf_score": 0.030331,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 4,
+                "sparse": 8
+              }
+            },
+            {
+              "rank": 4,
+              "chunk_id": 24,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 2.4276,
+              "vector_score": 0.5014,
+              "rrf_score": 0.029762,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 12,
+                "sparse": 3
+              }
+            },
+            {
+              "rank": 5,
+              "chunk_id": 28,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 2.3957,
+              "vector_score": 0.507,
+              "rrf_score": 0.02971,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 11,
+                "sparse": 4
+              }
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "hybrid_rrf_rerank": {
+          "config": "hybrid_rrf_rerank",
+          "first_relevant_rank": 3,
+          "metrics": {
+            "hit_rate_at_1": 0.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 0.3333
+          },
+          "retrieved_policy_ids": [
+            "REF-001",
+            "REF-001",
+            "RET-002",
+            "RET-002",
+            "RET-002"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 41,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 3,
+              "bm25_score": 3.0639,
+              "vector_score": 0.5838,
+              "rrf_score": 0.032002,
+              "rerank_score": -4.534,
+              "normalised_rerank_score": 0.0106,
+              "retriever_ranks": {
+                "dense": 3,
+                "sparse": 2
+              }
+            },
+            {
+              "rank": 2,
+              "chunk_id": 38,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 0,
+              "bm25_score": null,
+              "vector_score": 0.5889,
+              "rrf_score": 0.016129,
+              "rerank_score": -4.7195,
+              "normalised_rerank_score": 0.0088,
+              "retriever_ranks": {
+                "dense": 2
+              }
+            },
+            {
+              "rank": 3,
+              "chunk_id": 42,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 0,
+              "bm25_score": 1.1212,
+              "vector_score": 0.6204,
+              "rrf_score": 0.031545,
+              "rerank_score": -4.7842,
+              "normalised_rerank_score": 0.0083,
+              "retriever_ranks": {
+                "dense": 1,
+                "sparse": 6
+              }
+            },
+            {
+              "rank": 4,
+              "chunk_id": 43,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 0.8424,
+              "vector_score": 0.5663,
+              "rrf_score": 0.030331,
+              "rerank_score": -5.3436,
+              "normalised_rerank_score": 0.0048,
+              "retriever_ranks": {
+                "dense": 4,
+                "sparse": 8
+              }
+            },
+            {
+              "rank": 5,
+              "chunk_id": 44,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 1.0467,
+              "vector_score": 0.5211,
+              "rrf_score": 0.029418,
+              "rerank_score": -5.6009,
+              "normalised_rerank_score": 0.0037,
+              "retriever_ranks": {
+                "dense": 9,
+                "sparse": 7
+              }
+            }
+          ],
+          "reranker_used": true,
+          "failure": null
+        }
+      }
+    },
+    {
+      "case_id": "GC-003",
+      "question": "What does error PAY-402 mean at checkout?",
+      "category": "payment",
+      "difficulty": "easy",
+      "should_abstain": false,
+      "expected_sources": [
+        "payment_failure_faq.txt"
+      ],
+      "configs": {
+        "bm25_only": {
+          "config": "bm25_only",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "PAY-005",
+            "PAY-005",
+            "REF-001",
+            "DMG-003",
+            "MAN-006",
+            "DMG-003",
+            "PAY-005",
+            "PAY-005",
+            "REF-001",
+            "REF-001"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 31,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 0,
+              "bm25_score": 9.3406,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 2,
+              "chunk_id": 32,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 1,
+              "bm25_score": 9.206,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 3,
+              "chunk_id": 40,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 4.3466,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 4,
+              "chunk_id": 26,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 3,
+              "bm25_score": 2.7407,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 5,
+              "chunk_id": 36,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 1,
+              "bm25_score": 2.2719,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "vector_only": {
+          "config": "vector_only",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "PAY-005",
+            "PAY-005",
+            "PAY-005",
+            "REF-001",
+            "MAN-006",
+            "REF-001",
+            "RET-002",
+            "REF-001",
+            "REF-001",
+            "PAY-005"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 32,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 1,
+              "bm25_score": null,
+              "vector_score": 0.6705,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 2,
+              "chunk_id": 31,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 0,
+              "bm25_score": null,
+              "vector_score": 0.6242,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 3,
+              "chunk_id": 33,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 2,
+              "bm25_score": null,
+              "vector_score": 0.4996,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 4,
+              "chunk_id": 40,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": null,
+              "vector_score": 0.4656,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 5,
+              "chunk_id": 36,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 1,
+              "bm25_score": null,
+              "vector_score": 0.4637,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "hybrid_rrf": {
+          "config": "hybrid_rrf",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "PAY-005",
+            "PAY-005",
+            "REF-001",
+            "PAY-005",
+            "MAN-006",
+            "REF-001",
+            "RET-002",
+            "PAY-005",
+            "REF-001",
+            "DMG-003"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 31,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 0,
+              "bm25_score": 9.3406,
+              "vector_score": 0.6242,
+              "rrf_score": 0.032522,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 2,
+                "sparse": 1
+              }
+            },
+            {
+              "rank": 2,
+              "chunk_id": 32,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 1,
+              "bm25_score": 9.206,
+              "vector_score": 0.6705,
+              "rrf_score": 0.032522,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 1,
+                "sparse": 2
+              }
+            },
+            {
+              "rank": 3,
+              "chunk_id": 40,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 4.3466,
+              "vector_score": 0.4656,
+              "rrf_score": 0.031498,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 4,
+                "sparse": 3
+              }
+            },
+            {
+              "rank": 4,
+              "chunk_id": 33,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 2,
+              "bm25_score": 1.635,
+              "vector_score": 0.4996,
+              "rrf_score": 0.030798,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 3,
+                "sparse": 7
+              }
+            },
+            {
+              "rank": 5,
+              "chunk_id": 36,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 1,
+              "bm25_score": 2.2719,
+              "vector_score": 0.4637,
+              "rrf_score": 0.030769,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 5,
+                "sparse": 5
+              }
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "hybrid_rrf_rerank": {
+          "config": "hybrid_rrf_rerank",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "PAY-005",
+            "PAY-005",
+            "PAY-005",
+            "PAY-005",
+            "MAN-006"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 32,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 1,
+              "bm25_score": 9.206,
+              "vector_score": 0.6705,
+              "rrf_score": 0.032522,
+              "rerank_score": 1.469,
+              "normalised_rerank_score": 0.8129,
+              "retriever_ranks": {
+                "dense": 1,
+                "sparse": 2
+              }
+            },
+            {
+              "rank": 2,
+              "chunk_id": 31,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 0,
+              "bm25_score": 9.3406,
+              "vector_score": 0.6242,
+              "rrf_score": 0.032522,
+              "rerank_score": -4.0782,
+              "normalised_rerank_score": 0.0167,
+              "retriever_ranks": {
+                "dense": 2,
+                "sparse": 1
+              }
+            },
+            {
+              "rank": 3,
+              "chunk_id": 33,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 2,
+              "bm25_score": 1.635,
+              "vector_score": 0.4996,
+              "rrf_score": 0.030798,
+              "rerank_score": -6.297,
+              "normalised_rerank_score": 0.0018,
+              "retriever_ranks": {
+                "dense": 3,
+                "sparse": 7
+              }
+            },
+            {
+              "rank": 4,
+              "chunk_id": 34,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 3,
+              "bm25_score": 1.1508,
+              "vector_score": 0.4448,
+              "rrf_score": 0.028992,
+              "rerank_score": -6.8253,
+              "normalised_rerank_score": 0.0011,
+              "retriever_ranks": {
+                "dense": 10,
+                "sparse": 8
+              }
+            },
+            {
+              "rank": 5,
+              "chunk_id": 36,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 1,
+              "bm25_score": 2.2719,
+              "vector_score": 0.4637,
+              "rrf_score": 0.030769,
+              "rerank_score": -8.0446,
+              "normalised_rerank_score": 0.0003,
+              "retriever_ranks": {
+                "dense": 5,
+                "sparse": 5
+              }
+            }
+          ],
+          "reranker_used": true,
+          "failure": null
+        }
+      }
+    },
+    {
+      "case_id": "GC-004",
+      "question": "What evidence do I need to send for a damaged item claim?",
+      "category": "damaged",
+      "difficulty": "easy",
+      "should_abstain": false,
+      "expected_sources": [
+        "damaged_product_policy.txt"
+      ],
+      "configs": {
+        "bm25_only": {
+          "config": "bm25_only",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "DMG-003",
+            "PAY-005",
+            "DMG-003",
+            "DEL-004",
+            "PAY-005",
+            "DMG-003",
+            "REF-001",
+            "RET-002",
+            "MAN-006",
+            "PAY-005"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 24,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 7.9203,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 2,
+              "chunk_id": 31,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 0,
+              "bm25_score": 4.1963,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 3,
+              "chunk_id": 25,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 3.8804,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 4,
+              "chunk_id": 29,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 2.9064,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 5,
+              "chunk_id": 34,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 3,
+              "bm25_score": 2.8587,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "vector_only": {
+          "config": "vector_only",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "DMG-003",
+            "DMG-003",
+            "DMG-003",
+            "RET-002",
+            "DMG-003",
+            "DEL-004",
+            "DEL-004",
+            "REF-001",
+            "REF-001",
+            "REF-001"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 24,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": null,
+              "vector_score": 0.7474,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 2,
+              "chunk_id": 25,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": null,
+              "vector_score": 0.6113,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 3,
+              "chunk_id": 23,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 0,
+              "bm25_score": null,
+              "vector_score": 0.5966,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 4,
+              "chunk_id": 43,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": null,
+              "vector_score": 0.5715,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 5,
+              "chunk_id": 26,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 3,
+              "bm25_score": null,
+              "vector_score": 0.5465,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "hybrid_rrf": {
+          "config": "hybrid_rrf",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "DMG-003",
+            "DMG-003",
+            "DEL-004",
+            "DMG-003",
+            "RET-002",
+            "PAY-005",
+            "DMG-003",
+            "REF-001",
+            "PAY-005",
+            "MAN-006"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 24,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 7.9203,
+              "vector_score": 0.7474,
+              "rrf_score": 0.032787,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 1,
+                "sparse": 1
+              }
+            },
+            {
+              "rank": 2,
+              "chunk_id": 25,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 3.8804,
+              "vector_score": 0.6113,
+              "rrf_score": 0.032002,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 2,
+                "sparse": 3
+              }
+            },
+            {
+              "rank": 3,
+              "chunk_id": 29,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 2.9064,
+              "vector_score": 0.4916,
+              "rrf_score": 0.03055,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 7,
+                "sparse": 4
+              }
+            },
+            {
+              "rank": 4,
+              "chunk_id": 26,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 3,
+              "bm25_score": 2.721,
+              "vector_score": 0.5465,
+              "rrf_score": 0.030536,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 5,
+                "sparse": 6
+              }
+            },
+            {
+              "rank": 5,
+              "chunk_id": 43,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 1.6907,
+              "vector_score": 0.5715,
+              "rrf_score": 0.030331,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 4,
+                "sparse": 8
+              }
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "hybrid_rrf_rerank": {
+          "config": "hybrid_rrf_rerank",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "DMG-003",
+            "DMG-003",
+            "RET-002",
+            "DMG-003",
+            "DEL-004"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 24,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 7.9203,
+              "vector_score": 0.7474,
+              "rrf_score": 0.032787,
+              "rerank_score": 4.0238,
+              "normalised_rerank_score": 0.9824,
+              "retriever_ranks": {
+                "dense": 1,
+                "sparse": 1
+              }
+            },
+            {
+              "rank": 2,
+              "chunk_id": 25,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 3.8804,
+              "vector_score": 0.6113,
+              "rrf_score": 0.032002,
+              "rerank_score": -2.6513,
+              "normalised_rerank_score": 0.0659,
+              "retriever_ranks": {
+                "dense": 2,
+                "sparse": 3
+              }
+            },
+            {
+              "rank": 3,
+              "chunk_id": 43,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 1.6907,
+              "vector_score": 0.5715,
+              "rrf_score": 0.030331,
+              "rerank_score": -3.6159,
+              "normalised_rerank_score": 0.0262,
+              "retriever_ranks": {
+                "dense": 4,
+                "sparse": 8
+              }
+            },
+            {
+              "rank": 4,
+              "chunk_id": 23,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 0,
+              "bm25_score": 1.4064,
+              "vector_score": 0.5966,
+              "rrf_score": 0.029958,
+              "rerank_score": -3.8453,
+              "normalised_rerank_score": 0.0209,
+              "retriever_ranks": {
+                "dense": 3,
+                "sparse": 11
+              }
+            },
+            {
+              "rank": 5,
+              "chunk_id": 29,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 2.9064,
+              "vector_score": 0.4916,
+              "rrf_score": 0.03055,
+              "rerank_score": -3.9999,
+              "normalised_rerank_score": 0.018,
+              "retriever_ranks": {
+                "dense": 7,
+                "sparse": 4
+              }
+            }
+          ],
+          "reranker_used": true,
+          "failure": null
+        }
+      }
+    },
+    {
+      "case_id": "GC-005",
+      "question": "My parcel never turned up. When do you count it as actually lost?",
+      "category": "delivery",
+      "difficulty": "medium",
+      "should_abstain": false,
+      "expected_sources": [
+        "delivery_policy.txt"
+      ],
+      "configs": {
+        "bm25_only": {
+          "config": "bm25_only",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "DEL-004",
+            "REF-001",
+            "PAY-005",
+            "REF-001",
+            "DMG-003",
+            "DEL-004",
+            "PAY-005",
+            "RET-002",
+            "MAN-006",
+            "DEL-004"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 28,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 10.1138,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 2,
+              "chunk_id": 40,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 4.0458,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 3,
+              "chunk_id": 34,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 3,
+              "bm25_score": 3.4156,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 4,
+              "chunk_id": 39,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 2.8415,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 5,
+              "chunk_id": 24,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 2.4377,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "vector_only": {
+          "config": "vector_only",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "DEL-004",
+            "DEL-004",
+            "REF-001",
+            "DMG-003",
+            "RET-002",
+            "RET-002",
+            "DMG-003",
+            "DEL-004",
+            "PAY-005",
+            "REF-001"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 28,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": null,
+              "vector_score": 0.7027,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 2,
+              "chunk_id": 29,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": null,
+              "vector_score": 0.6559,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 3,
+              "chunk_id": 39,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": null,
+              "vector_score": 0.5267,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 4,
+              "chunk_id": 23,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 0,
+              "bm25_score": null,
+              "vector_score": 0.5262,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 5,
+              "chunk_id": 42,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 0,
+              "bm25_score": null,
+              "vector_score": 0.5246,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "hybrid_rrf": {
+          "config": "hybrid_rrf",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "DEL-004",
+            "REF-001",
+            "DEL-004",
+            "DMG-003",
+            "REF-001",
+            "RET-002",
+            "PAY-005",
+            "RET-002",
+            "PAY-005",
+            "DEL-004"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 28,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 10.1138,
+              "vector_score": 0.7027,
+              "rrf_score": 0.032787,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 1,
+                "sparse": 1
+              }
+            },
+            {
+              "rank": 2,
+              "chunk_id": 39,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 2.8415,
+              "vector_score": 0.5267,
+              "rrf_score": 0.031498,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 3,
+                "sparse": 4
+              }
+            },
+            {
+              "rank": 3,
+              "chunk_id": 29,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 2.3508,
+              "vector_score": 0.6559,
+              "rrf_score": 0.031281,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 2,
+                "sparse": 6
+              }
+            },
+            {
+              "rank": 4,
+              "chunk_id": 24,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 2.4377,
+              "vector_score": 0.5227,
+              "rrf_score": 0.03031,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 7,
+                "sparse": 5
+              }
+            },
+            {
+              "rank": 5,
+              "chunk_id": 40,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 4.0458,
+              "vector_score": 0.5045,
+              "rrf_score": 0.030214,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 11,
+                "sparse": 2
+              }
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "hybrid_rrf_rerank": {
+          "config": "hybrid_rrf_rerank",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "DEL-004",
+            "DEL-004",
+            "RET-002",
+            "REF-001",
+            "DMG-003"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 28,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 10.1138,
+              "vector_score": 0.7027,
+              "rrf_score": 0.032787,
+              "rerank_score": 1.1146,
+              "normalised_rerank_score": 0.753,
+              "retriever_ranks": {
+                "dense": 1,
+                "sparse": 1
+              }
+            },
+            {
+              "rank": 2,
+              "chunk_id": 29,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 2.3508,
+              "vector_score": 0.6559,
+              "rrf_score": 0.031281,
+              "rerank_score": -2.7563,
+              "normalised_rerank_score": 0.0597,
+              "retriever_ranks": {
+                "dense": 2,
+                "sparse": 6
+              }
+            },
+            {
+              "rank": 3,
+              "chunk_id": 43,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 1.8957,
+              "vector_score": 0.5235,
+              "rrf_score": 0.029857,
+              "rerank_score": -5.524,
+              "normalised_rerank_score": 0.004,
+              "retriever_ranks": {
+                "dense": 6,
+                "sparse": 8
+              }
+            },
+            {
+              "rank": 4,
+              "chunk_id": 38,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 0,
+              "bm25_score": null,
+              "vector_score": 0.51,
+              "rrf_score": 0.014286,
+              "rerank_score": -6.143,
+              "normalised_rerank_score": 0.0021,
+              "retriever_ranks": {
+                "dense": 10
+              }
+            },
+            {
+              "rank": 5,
+              "chunk_id": 24,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 2.4377,
+              "vector_score": 0.5227,
+              "rrf_score": 0.03031,
+              "rerank_score": -6.3826,
+              "normalised_rerank_score": 0.0017,
+              "retriever_ranks": {
+                "dense": 7,
+                "sparse": 5
+              }
+            }
+          ],
+          "reranker_used": true,
+          "failure": null
+        }
+      }
+    },
+    {
+      "case_id": "GC-006",
+      "question": "My AuraBrew X200 is showing E04, what should I do?",
+      "category": "product_manual",
+      "difficulty": "medium",
+      "should_abstain": false,
+      "expected_sources": [
+        "product_manual_example.txt"
+      ],
+      "configs": {
+        "bm25_only": {
+          "config": "bm25_only",
+          "first_relevant_rank": 2,
+          "metrics": {
+            "hit_rate_at_1": 0.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 0.5
+          },
+          "retrieved_policy_ids": [
+            "PAY-005",
+            "MAN-006",
+            "MAN-006",
+            "MAN-006",
+            "DEL-004",
+            "DMG-003",
+            "DEL-004",
+            "PAY-005",
+            "PAY-005"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 31,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 0,
+              "bm25_score": 6.6175,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 2,
+              "chunk_id": 36,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 1,
+              "bm25_score": 6.5256,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 3,
+              "chunk_id": 37,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 2,
+              "bm25_score": 6.161,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 4,
+              "chunk_id": 35,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 0,
+              "bm25_score": 5.5726,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 5,
+              "chunk_id": 28,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 2.2386,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "vector_only": {
+          "config": "vector_only",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "MAN-006",
+            "MAN-006",
+            "MAN-006",
+            "DMG-003",
+            "RET-002",
+            "PAY-005",
+            "REF-001",
+            "PAY-005",
+            "DEL-004",
+            "PAY-005"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 36,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 1,
+              "bm25_score": null,
+              "vector_score": 0.6236,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 2,
+              "chunk_id": 37,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 2,
+              "bm25_score": null,
+              "vector_score": 0.5985,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 3,
+              "chunk_id": 35,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 0,
+              "bm25_score": null,
+              "vector_score": 0.5582,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 4,
+              "chunk_id": 26,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 3,
+              "bm25_score": null,
+              "vector_score": 0.4167,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 5,
+              "chunk_id": 43,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": null,
+              "vector_score": 0.4053,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "hybrid_rrf": {
+          "config": "hybrid_rrf",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "MAN-006",
+            "MAN-006",
+            "MAN-006",
+            "PAY-005",
+            "PAY-005",
+            "DEL-004",
+            "DMG-003",
+            "DEL-004",
+            "DMG-003",
+            "RET-002"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 36,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 1,
+              "bm25_score": 6.5256,
+              "vector_score": 0.6236,
+              "rrf_score": 0.032522,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 1,
+                "sparse": 2
+              }
+            },
+            {
+              "rank": 2,
+              "chunk_id": 37,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 2,
+              "bm25_score": 6.161,
+              "vector_score": 0.5985,
+              "rrf_score": 0.032002,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 2,
+                "sparse": 3
+              }
+            },
+            {
+              "rank": 3,
+              "chunk_id": 35,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 0,
+              "bm25_score": 5.5726,
+              "vector_score": 0.5582,
+              "rrf_score": 0.031498,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 3,
+                "sparse": 4
+              }
+            },
+            {
+              "rank": 4,
+              "chunk_id": 31,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 0,
+              "bm25_score": 6.6175,
+              "vector_score": 0.4013,
+              "rrf_score": 0.031099,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 8,
+                "sparse": 1
+              }
+            },
+            {
+              "rank": 5,
+              "chunk_id": 32,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 1,
+              "bm25_score": 1.4968,
+              "vector_score": 0.4045,
+              "rrf_score": 0.029644,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 6,
+                "sparse": 9
+              }
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "hybrid_rrf_rerank": {
+          "config": "hybrid_rrf_rerank",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "MAN-006",
+            "MAN-006",
+            "MAN-006",
+            "RET-002",
+            "DMG-003"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 36,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 1,
+              "bm25_score": 6.5256,
+              "vector_score": 0.6236,
+              "rrf_score": 0.032522,
+              "rerank_score": 3.6154,
+              "normalised_rerank_score": 0.9738,
+              "retriever_ranks": {
+                "dense": 1,
+                "sparse": 2
+              }
+            },
+            {
+              "rank": 2,
+              "chunk_id": 37,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 2,
+              "bm25_score": 6.161,
+              "vector_score": 0.5985,
+              "rrf_score": 0.032002,
+              "rerank_score": 3.4985,
+              "normalised_rerank_score": 0.9706,
+              "retriever_ranks": {
+                "dense": 2,
+                "sparse": 3
+              }
+            },
+            {
+              "rank": 3,
+              "chunk_id": 35,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 0,
+              "bm25_score": 5.5726,
+              "vector_score": 0.5582,
+              "rrf_score": 0.031498,
+              "rerank_score": -0.6046,
+              "normalised_rerank_score": 0.3533,
+              "retriever_ranks": {
+                "dense": 3,
+                "sparse": 4
+              }
+            },
+            {
+              "rank": 4,
+              "chunk_id": 43,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": null,
+              "vector_score": 0.4053,
+              "rrf_score": 0.015385,
+              "rerank_score": -7.9147,
+              "normalised_rerank_score": 0.0004,
+              "retriever_ranks": {
+                "dense": 5
+              }
+            },
+            {
+              "rank": 5,
+              "chunk_id": 25,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 1.9918,
+              "vector_score": 0.379,
+              "rrf_score": 0.02904,
+              "rerank_score": -8.049,
+              "normalised_rerank_score": 0.0003,
+              "retriever_ranks": {
+                "dense": 12,
+                "sparse": 6
+              }
+            }
+          ],
+          "reranker_used": true,
+          "failure": null
+        }
+      }
+    },
+    {
+      "case_id": "GC-007",
+      "question": "Will you charge me a restocking fee if the appliance arrived damaged?",
+      "category": "refund",
+      "difficulty": "hard",
+      "should_abstain": false,
+      "expected_sources": [
+        "refund_policy.txt"
+      ],
+      "configs": {
+        "bm25_only": {
+          "config": "bm25_only",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "REF-001",
+            "RET-002",
+            "PAY-005",
+            "RET-002",
+            "DEL-004",
+            "DMG-003",
+            "PAY-005",
+            "DMG-003",
+            "DMG-003",
+            "DMG-003"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 40,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 6.0765,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 2,
+              "chunk_id": 44,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 3.5989,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 3,
+              "chunk_id": 34,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 3,
+              "bm25_score": 2.8587,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 4,
+              "chunk_id": 43,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 1.8957,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 5,
+              "chunk_id": 29,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 1.5306,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "vector_only": {
+          "config": "vector_only",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "REF-001",
+            "RET-002",
+            "DMG-003",
+            "RET-002",
+            "DMG-003",
+            "REF-001",
+            "REF-001",
+            "RET-002",
+            "REF-001",
+            "DMG-003"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 40,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": null,
+              "vector_score": 0.645,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 2,
+              "chunk_id": 44,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": null,
+              "vector_score": 0.5998,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 3,
+              "chunk_id": 25,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": null,
+              "vector_score": 0.5933,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 4,
+              "chunk_id": 43,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": null,
+              "vector_score": 0.5863,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 5,
+              "chunk_id": 24,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": null,
+              "vector_score": 0.558,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "hybrid_rrf": {
+          "config": "hybrid_rrf",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "REF-001",
+            "RET-002",
+            "RET-002",
+            "DMG-003",
+            "DMG-003",
+            "PAY-005",
+            "DMG-003",
+            "DEL-004",
+            "DMG-003",
+            "MAN-006"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 40,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 6.0765,
+              "vector_score": 0.645,
+              "rrf_score": 0.032787,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 1,
+                "sparse": 1
+              }
+            },
+            {
+              "rank": 2,
+              "chunk_id": 44,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 3.5989,
+              "vector_score": 0.5998,
+              "rrf_score": 0.032258,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 2,
+                "sparse": 2
+              }
+            },
+            {
+              "rank": 3,
+              "chunk_id": 43,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 1.8957,
+              "vector_score": 0.5863,
+              "rrf_score": 0.03125,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 4,
+                "sparse": 4
+              }
+            },
+            {
+              "rank": 4,
+              "chunk_id": 25,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 1.5054,
+              "vector_score": 0.5933,
+              "rrf_score": 0.031025,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 3,
+                "sparse": 6
+              }
+            },
+            {
+              "rank": 5,
+              "chunk_id": 24,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 1.2531,
+              "vector_score": 0.558,
+              "rrf_score": 0.029877,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 5,
+                "sparse": 9
+              }
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "hybrid_rrf_rerank": {
+          "config": "hybrid_rrf_rerank",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "REF-001",
+            "DMG-003",
+            "RET-002",
+            "DMG-003",
+            "RET-002"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 40,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 6.0765,
+              "vector_score": 0.645,
+              "rrf_score": 0.032787,
+              "rerank_score": 1.13,
+              "normalised_rerank_score": 0.7558,
+              "retriever_ranks": {
+                "dense": 1,
+                "sparse": 1
+              }
+            },
+            {
+              "rank": 2,
+              "chunk_id": 24,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 1.2531,
+              "vector_score": 0.558,
+              "rrf_score": 0.029877,
+              "rerank_score": -4.7276,
+              "normalised_rerank_score": 0.0088,
+              "retriever_ranks": {
+                "dense": 5,
+                "sparse": 9
+              }
+            },
+            {
+              "rank": 3,
+              "chunk_id": 43,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 1.8957,
+              "vector_score": 0.5863,
+              "rrf_score": 0.03125,
+              "rerank_score": -4.8298,
+              "normalised_rerank_score": 0.0079,
+              "retriever_ranks": {
+                "dense": 4,
+                "sparse": 4
+              }
+            },
+            {
+              "rank": 4,
+              "chunk_id": 25,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 1.5054,
+              "vector_score": 0.5933,
+              "rrf_score": 0.031025,
+              "rerank_score": -5.8747,
+              "normalised_rerank_score": 0.0028,
+              "retriever_ranks": {
+                "dense": 3,
+                "sparse": 6
+              }
+            },
+            {
+              "rank": 5,
+              "chunk_id": 44,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 3.5989,
+              "vector_score": 0.5998,
+              "rrf_score": 0.032258,
+              "rerank_score": -6.0218,
+              "normalised_rerank_score": 0.0024,
+              "retriever_ranks": {
+                "dense": 2,
+                "sparse": 2
+              }
+            }
+          ],
+          "reranker_used": true,
+          "failure": null
+        }
+      }
+    },
+    {
+      "case_id": "GC-008",
+      "question": "I only noticed the damage after unboxing a few days later. Is it too late?",
+      "category": "damaged",
+      "difficulty": "hard",
+      "should_abstain": false,
+      "expected_sources": [
+        "damaged_product_policy.txt"
+      ],
+      "configs": {
+        "bm25_only": {
+          "config": "bm25_only",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "DMG-003",
+            "MAN-006",
+            "DMG-003",
+            "DMG-003",
+            "PAY-005",
+            "RET-002",
+            "RET-002",
+            "REF-001",
+            "PAY-005",
+            "MAN-006"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 23,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 0,
+              "bm25_score": 6.1438,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 2,
+              "chunk_id": 36,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 1,
+              "bm25_score": 3.1594,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 3,
+              "chunk_id": 24,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 3.1509,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 4,
+              "chunk_id": 26,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 3,
+              "bm25_score": 2.721,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 5,
+              "chunk_id": 33,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 2,
+              "bm25_score": 2.3037,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "vector_only": {
+          "config": "vector_only",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "DMG-003",
+            "DMG-003",
+            "DEL-004",
+            "DMG-003",
+            "DEL-004",
+            "DMG-003",
+            "REF-001",
+            "RET-002",
+            "REF-001",
+            "REF-001"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 23,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 0,
+              "bm25_score": null,
+              "vector_score": 0.5896,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 2,
+              "chunk_id": 24,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": null,
+              "vector_score": 0.5463,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 3,
+              "chunk_id": 28,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": null,
+              "vector_score": 0.5017,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 4,
+              "chunk_id": 25,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": null,
+              "vector_score": 0.4975,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 5,
+              "chunk_id": 29,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": null,
+              "vector_score": 0.484,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "hybrid_rrf": {
+          "config": "hybrid_rrf",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "DMG-003",
+            "DMG-003",
+            "DMG-003",
+            "MAN-006",
+            "DEL-004",
+            "RET-002",
+            "DEL-004",
+            "REF-001",
+            "DMG-003",
+            "PAY-005"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 23,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 0,
+              "bm25_score": 6.1438,
+              "vector_score": 0.5896,
+              "rrf_score": 0.032787,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 1,
+                "sparse": 1
+              }
+            },
+            {
+              "rank": 2,
+              "chunk_id": 24,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 3.1509,
+              "vector_score": 0.5463,
+              "rrf_score": 0.032002,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 2,
+                "sparse": 3
+              }
+            },
+            {
+              "rank": 3,
+              "chunk_id": 26,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 3,
+              "bm25_score": 2.721,
+              "vector_score": 0.4654,
+              "rrf_score": 0.030777,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 6,
+                "sparse": 4
+              }
+            },
+            {
+              "rank": 4,
+              "chunk_id": 36,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 1,
+              "bm25_score": 3.1594,
+              "vector_score": 0.4313,
+              "rrf_score": 0.030214,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 11,
+                "sparse": 2
+              }
+            },
+            {
+              "rank": 5,
+              "chunk_id": 28,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 1.613,
+              "vector_score": 0.5017,
+              "rrf_score": 0.029958,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 3,
+                "sparse": 11
+              }
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "hybrid_rrf_rerank": {
+          "config": "hybrid_rrf_rerank",
+          "first_relevant_rank": 1,
+          "metrics": {
+            "hit_rate_at_1": 1.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "retrieved_policy_ids": [
+            "DMG-003",
+            "DMG-003",
+            "RET-002",
+            "DMG-003",
+            "DMG-003"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 23,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 0,
+              "bm25_score": 6.1438,
+              "vector_score": 0.5896,
+              "rrf_score": 0.032787,
+              "rerank_score": -0.1323,
+              "normalised_rerank_score": 0.467,
+              "retriever_ranks": {
+                "dense": 1,
+                "sparse": 1
+              }
+            },
+            {
+              "rank": 2,
+              "chunk_id": 24,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 3.1509,
+              "vector_score": 0.5463,
+              "rrf_score": 0.032002,
+              "rerank_score": -4.1909,
+              "normalised_rerank_score": 0.0149,
+              "retriever_ranks": {
+                "dense": 2,
+                "sparse": 3
+              }
+            },
+            {
+              "rank": 3,
+              "chunk_id": 43,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 2.1407,
+              "vector_score": 0.4568,
+              "rrf_score": 0.029857,
+              "rerank_score": -6.2951,
+              "normalised_rerank_score": 0.0018,
+              "retriever_ranks": {
+                "dense": 8,
+                "sparse": 6
+              }
+            },
+            {
+              "rank": 4,
+              "chunk_id": 25,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 1.0957,
+              "vector_score": 0.4975,
+              "rrf_score": 0.029139,
+              "rerank_score": -6.7012,
+              "normalised_rerank_score": 0.0012,
+              "retriever_ranks": {
+                "dense": 4,
+                "sparse": 14
+              }
+            },
+            {
+              "rank": 5,
+              "chunk_id": 26,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 3,
+              "bm25_score": 2.721,
+              "vector_score": 0.4654,
+              "rrf_score": 0.030777,
+              "rerank_score": -6.8957,
+              "normalised_rerank_score": 0.001,
+              "retriever_ranks": {
+                "dense": 6,
+                "sparse": 4
+              }
+            }
+          ],
+          "reranker_used": true,
+          "failure": null
+        }
+      }
+    },
+    {
+      "case_id": "GC-009",
+      "question": "Can I get a mortgage or a personal loan through your store?",
+      "category": "out_of_scope",
+      "difficulty": "easy",
+      "should_abstain": true,
+      "expected_sources": [],
+      "configs": {
+        "bm25_only": {
+          "config": "bm25_only",
+          "first_relevant_rank": null,
+          "metrics": {},
+          "retrieved_policy_ids": [
+            "DEL-004",
+            "REF-001",
+            "REF-001",
+            "PAY-005",
+            "DEL-004"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 30,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 3,
+              "bm25_score": 5.9404,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 2,
+              "chunk_id": 40,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 2.9097,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 3,
+              "chunk_id": 39,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 2.4643,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 4,
+              "chunk_id": 33,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 2,
+              "bm25_score": 2.4263,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 5,
+              "chunk_id": 28,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 1.8274,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "vector_only": {
+          "config": "vector_only",
+          "first_relevant_rank": null,
+          "metrics": {},
+          "retrieved_policy_ids": [
+            "REF-001",
+            "PAY-005",
+            "RET-002",
+            "DMG-003",
+            "REF-001",
+            "DEL-004",
+            "PAY-005",
+            "DMG-003",
+            "REF-001",
+            "DEL-004"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 41,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 3,
+              "bm25_score": null,
+              "vector_score": 0.4451,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 2,
+              "chunk_id": 33,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 2,
+              "bm25_score": null,
+              "vector_score": 0.4438,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 3,
+              "chunk_id": 42,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 0,
+              "bm25_score": null,
+              "vector_score": 0.4232,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 4,
+              "chunk_id": 25,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": null,
+              "vector_score": 0.4188,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 5,
+              "chunk_id": 40,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": null,
+              "vector_score": 0.4174,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "hybrid_rrf": {
+          "config": "hybrid_rrf",
+          "first_relevant_rank": null,
+          "metrics": {},
+          "retrieved_policy_ids": [
+            "PAY-005",
+            "DEL-004",
+            "REF-001",
+            "REF-001",
+            "DEL-004",
+            "REF-001",
+            "RET-002",
+            "DMG-003",
+            "PAY-005",
+            "DMG-003"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 33,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 2,
+              "bm25_score": 2.4263,
+              "vector_score": 0.4438,
+              "rrf_score": 0.031754,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 2,
+                "sparse": 4
+              }
+            },
+            {
+              "rank": 2,
+              "chunk_id": 30,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 3,
+              "bm25_score": 5.9404,
+              "vector_score": 0.41,
+              "rrf_score": 0.031545,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 6,
+                "sparse": 1
+              }
+            },
+            {
+              "rank": 3,
+              "chunk_id": 40,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 2.9097,
+              "vector_score": 0.4174,
+              "rrf_score": 0.031514,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 5,
+                "sparse": 2
+              }
+            },
+            {
+              "rank": 4,
+              "chunk_id": 39,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 2.4643,
+              "vector_score": 0.3788,
+              "rrf_score": 0.029387,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 14,
+                "sparse": 3
+              }
+            },
+            {
+              "rank": 5,
+              "chunk_id": 28,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 1.8274,
+              "vector_score": 0.3769,
+              "rrf_score": 0.028718,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 15,
+                "sparse": 5
+              }
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "hybrid_rrf_rerank": {
+          "config": "hybrid_rrf_rerank",
+          "first_relevant_rank": null,
+          "metrics": {},
+          "retrieved_policy_ids": [
+            "REF-001",
+            "REF-001",
+            "REF-001",
+            "REF-001",
+            "DEL-004"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 40,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 2.9097,
+              "vector_score": 0.4174,
+              "rrf_score": 0.031514,
+              "rerank_score": -9.5613,
+              "normalised_rerank_score": 0.0001,
+              "retriever_ranks": {
+                "dense": 5,
+                "sparse": 2
+              }
+            },
+            {
+              "rank": 2,
+              "chunk_id": 41,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 3,
+              "bm25_score": null,
+              "vector_score": 0.4451,
+              "rrf_score": 0.016393,
+              "rerank_score": -9.6125,
+              "normalised_rerank_score": 0.0001,
+              "retriever_ranks": {
+                "dense": 1
+              }
+            },
+            {
+              "rank": 3,
+              "chunk_id": 39,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 2.4643,
+              "vector_score": 0.3788,
+              "rrf_score": 0.029387,
+              "rerank_score": -9.7077,
+              "normalised_rerank_score": 0.0001,
+              "retriever_ranks": {
+                "dense": 14,
+                "sparse": 3
+              }
+            },
+            {
+              "rank": 4,
+              "chunk_id": 38,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 0,
+              "bm25_score": null,
+              "vector_score": 0.4051,
+              "rrf_score": 0.014493,
+              "rerank_score": -9.9238,
+              "normalised_rerank_score": 0.0,
+              "retriever_ranks": {
+                "dense": 9
+              }
+            },
+            {
+              "rank": 5,
+              "chunk_id": 27,
+              "policy_id": "DEL-004",
+              "source": "delivery_policy.txt",
+              "chunk_index": 0,
+              "bm25_score": null,
+              "vector_score": 0.4045,
+              "rrf_score": 0.014286,
+              "rerank_score": -9.9493,
+              "normalised_rerank_score": 0.0,
+              "retriever_ranks": {
+                "dense": 10
+              }
+            }
+          ],
+          "reranker_used": true,
+          "failure": null
+        }
+      }
+    },
+    {
+      "case_id": "GC-010",
+      "question": "The espresso machine arrived cracked. Do I have to pay to send it back?",
+      "category": "damaged",
+      "difficulty": "hard",
+      "should_abstain": false,
+      "expected_sources": [
+        "damaged_product_policy.txt"
+      ],
+      "configs": {
+        "bm25_only": {
+          "config": "bm25_only",
+          "first_relevant_rank": 6,
+          "metrics": {
+            "hit_rate_at_1": 0.0,
+            "hit_rate_at_3": 0.0,
+            "hit_rate_at_5": 0.0,
+            "recall_at_5": 0.0,
+            "mrr_at_5": 0.0
+          },
+          "retrieved_policy_ids": [
+            "MAN-006",
+            "MAN-006",
+            "PAY-005",
+            "MAN-006",
+            "PAY-005",
+            "DMG-003",
+            "PAY-005",
+            "PAY-005",
+            "DMG-003"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 36,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 1,
+              "bm25_score": 4.6335,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 2,
+              "chunk_id": 35,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 0,
+              "bm25_score": 4.4397,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 3,
+              "chunk_id": 32,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 1,
+              "bm25_score": 3.8425,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 4,
+              "chunk_id": 37,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 2,
+              "bm25_score": 3.3648,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 5,
+              "chunk_id": 34,
+              "policy_id": "PAY-005",
+              "source": "payment_failure_faq.txt",
+              "chunk_index": 3,
+              "bm25_score": 2.8587,
+              "vector_score": null,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "vector_only": {
+          "config": "vector_only",
+          "first_relevant_rank": 5,
+          "metrics": {
+            "hit_rate_at_1": 0.0,
+            "hit_rate_at_3": 0.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 0.2
+          },
+          "retrieved_policy_ids": [
+            "REF-001",
+            "RET-002",
+            "MAN-006",
+            "RET-002",
+            "DMG-003",
+            "MAN-006",
+            "MAN-006",
+            "DMG-003",
+            "REF-001",
+            "REF-001"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 40,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": null,
+              "vector_score": 0.5916,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 2,
+              "chunk_id": 44,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": null,
+              "vector_score": 0.5719,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 3,
+              "chunk_id": 36,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 1,
+              "bm25_score": null,
+              "vector_score": 0.5635,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 4,
+              "chunk_id": 43,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": null,
+              "vector_score": 0.5621,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            },
+            {
+              "rank": 5,
+              "chunk_id": 25,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": null,
+              "vector_score": 0.5597,
+              "rrf_score": null,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {}
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "hybrid_rrf": {
+          "config": "hybrid_rrf",
+          "first_relevant_rank": 4,
+          "metrics": {
+            "hit_rate_at_1": 0.0,
+            "hit_rate_at_3": 0.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 0.25
+          },
+          "retrieved_policy_ids": [
+            "MAN-006",
+            "MAN-006",
+            "MAN-006",
+            "DMG-003",
+            "DMG-003",
+            "PAY-005",
+            "PAY-005",
+            "PAY-005",
+            "REF-001",
+            "RET-002"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 36,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 1,
+              "bm25_score": 4.6335,
+              "vector_score": 0.5635,
+              "rrf_score": 0.032266,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 3,
+                "sparse": 1
+              }
+            },
+            {
+              "rank": 2,
+              "chunk_id": 35,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 0,
+              "bm25_score": 4.4397,
+              "vector_score": 0.5331,
+              "rrf_score": 0.031054,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 7,
+                "sparse": 2
+              }
+            },
+            {
+              "rank": 3,
+              "chunk_id": 37,
+              "policy_id": "MAN-006",
+              "source": "product_manual_example.txt",
+              "chunk_index": 2,
+              "bm25_score": 3.3648,
+              "vector_score": 0.5535,
+              "rrf_score": 0.030777,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 6,
+                "sparse": 4
+              }
+            },
+            {
+              "rank": 4,
+              "chunk_id": 25,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 2.5204,
+              "vector_score": 0.5597,
+              "rrf_score": 0.030536,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 5,
+                "sparse": 6
+              }
+            },
+            {
+              "rank": 5,
+              "chunk_id": 24,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 1.065,
+              "vector_score": 0.5267,
+              "rrf_score": 0.029199,
+              "rerank_score": null,
+              "normalised_rerank_score": null,
+              "retriever_ranks": {
+                "dense": 8,
+                "sparse": 9
+              }
+            }
+          ],
+          "reranker_used": null,
+          "failure": null
+        },
+        "hybrid_rrf_rerank": {
+          "config": "hybrid_rrf_rerank",
+          "first_relevant_rank": 2,
+          "metrics": {
+            "hit_rate_at_1": 0.0,
+            "hit_rate_at_3": 1.0,
+            "hit_rate_at_5": 1.0,
+            "recall_at_5": 1.0,
+            "mrr_at_5": 0.5
+          },
+          "retrieved_policy_ids": [
+            "REF-001",
+            "DMG-003",
+            "DMG-003",
+            "RET-002",
+            "RET-002"
+          ],
+          "top_results": [
+            {
+              "rank": 1,
+              "chunk_id": 40,
+              "policy_id": "REF-001",
+              "source": "refund_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": null,
+              "vector_score": 0.5916,
+              "rrf_score": 0.016393,
+              "rerank_score": -4.4286,
+              "normalised_rerank_score": 0.0118,
+              "retriever_ranks": {
+                "dense": 1
+              }
+            },
+            {
+              "rank": 2,
+              "chunk_id": 24,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": 1.065,
+              "vector_score": 0.5267,
+              "rrf_score": 0.029199,
+              "rerank_score": -4.4566,
+              "normalised_rerank_score": 0.0115,
+              "retriever_ranks": {
+                "dense": 8,
+                "sparse": 9
+              }
+            },
+            {
+              "rank": 3,
+              "chunk_id": 25,
+              "policy_id": "DMG-003",
+              "source": "damaged_product_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": 2.5204,
+              "vector_score": 0.5597,
+              "rrf_score": 0.030536,
+              "rerank_score": -4.5934,
+              "normalised_rerank_score": 0.01,
+              "retriever_ranks": {
+                "dense": 5,
+                "sparse": 6
+              }
+            },
+            {
+              "rank": 4,
+              "chunk_id": 43,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 1,
+              "bm25_score": null,
+              "vector_score": 0.5621,
+              "rrf_score": 0.015625,
+              "rerank_score": -5.2749,
+              "normalised_rerank_score": 0.0051,
+              "retriever_ranks": {
+                "dense": 4
+              }
+            },
+            {
+              "rank": 5,
+              "chunk_id": 44,
+              "policy_id": "RET-002",
+              "source": "return_policy.txt",
+              "chunk_index": 2,
+              "bm25_score": null,
+              "vector_score": 0.5719,
+              "rrf_score": 0.016129,
+              "rerank_score": -5.7051,
+              "normalised_rerank_score": 0.0033,
+              "retriever_ranks": {
+                "dense": 2
+              }
+            }
+          ],
+          "reranker_used": true,
+          "failure": null
+        }
+      }
+    }
+  ],
+  "phase_b_comparison": {
+    "available": true,
+    "baseline_report": "reports\\retrieval_baseline.json",
+    "baseline_timestamp": "2026-08-15T10:54:29.579358+00:00",
+    "phase_b_metrics": {
+      "hit_rate_at_1": 0.7778,
+      "hit_rate_at_3": 0.8889,
+      "hit_rate_at_5": 1.0,
+      "mrr_at_5": 0.8611,
+      "recall_at_5": 1.0
+    },
+    "phase_c_hybrid_rrf_metrics": {
+      "hit_rate_at_1": 0.7778,
+      "hit_rate_at_3": 0.8889,
+      "hit_rate_at_5": 1.0,
+      "mrr_at_5": 0.8611,
+      "recall_at_5": 1.0
+    },
+    "deltas": {
+      "hit_rate_at_1": 0.0,
+      "hit_rate_at_3": 0.0,
+      "hit_rate_at_5": 0.0,
+      "mrr_at_5": 0.0,
+      "recall_at_5": 0.0
+    },
+    "hybrid_rrf_reproduces_phase_b": true
+  }
+}

@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     # --- Local models ---
     embedding_model: str = "BAAI/bge-m3"
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    # Used only when the primary reranker cannot be loaded. 22 M parameters
+    # against the primary's 568 M, so it stays usable on CPU-only machines.
+    reranker_fallback_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     model_device: str = "cpu"
 
     # --- Ingestion ---
@@ -58,6 +61,13 @@ class Settings(BaseSettings):
     fusion_top_k: int = 20
     rerank_top_k: int = 5
     rrf_k: int = 60
+
+    # --- Reranking ---
+    reranker_enabled: bool = True
+    # Candidates handed to the cross-encoder. Cost is linear in this number.
+    rerank_candidate_top_k: int = Field(default=20, ge=1)
+    reranker_batch_size: int = Field(default=16, ge=1)
+    reranker_max_length: int = Field(default=512, ge=64)
 
     # --- Deduplication ---
     dedup_enabled: bool = True
