@@ -1,0 +1,127 @@
+{
+  "version": "2026-08-15_golden_v1",
+  "description": "Golden evaluation set for RAGuard. Ten starter cases spanning every corpus document, plus exact-identifier retrieval and one mandatory-abstention case. Target size for the dissertation is 50 to 100 cases; grow this file, never replace it, so that historical metric runs stay comparable.",
+  "schema": {
+    "id": "stable case identifier, never reused",
+    "question": "customer-phrased question",
+    "ground_truth": "reference answer used by Ragas answer-level metrics",
+    "expected_sources": "filenames that must appear in retrieved context",
+    "expected_keywords": "literal strings that must survive retrieval, typically identifiers and time windows",
+    "should_abstain": "true when the correct behaviour is refusal",
+    "category": "corpus area",
+    "difficulty": "easy | medium | hard",
+    "probes": "what this case is designed to detect"
+  },
+  "cases": [
+    {
+      "id": "GC-001",
+      "question": "How long does a refund take to reach my credit card?",
+      "ground_truth": "Once the refund is approved, credit and debit card refunds are released in 5 to 7 business days. The clock starts when the returned item is scanned at the warehouse, not when it is posted.",
+      "expected_sources": ["refund_policy.txt"],
+      "expected_keywords": ["5 to 7 business days"],
+      "should_abstain": false,
+      "category": "refund",
+      "difficulty": "easy",
+      "probes": "baseline single-hop retrieval and faithful numeric reporting"
+    },
+    {
+      "id": "GC-002",
+      "question": "I bought a laptop three weeks ago, can I still return it?",
+      "ground_truth": "No. Electronics carry a 14-day return window under rule RT-014, which is shorter than the standard 30-day window, so a laptop bought three weeks ago falls outside it.",
+      "expected_sources": ["return_policy.txt"],
+      "expected_keywords": ["14-day return window", "RT-014"],
+      "should_abstain": false,
+      "category": "return",
+      "difficulty": "medium",
+      "probes": "the model must apply the electronics exception rather than the 30-day default"
+    },
+    {
+      "id": "GC-003",
+      "question": "What does error PAY-402 mean at checkout?",
+      "ground_truth": "PAY-402 means insufficient funds. The customer should retry with another card or top up the account.",
+      "expected_sources": ["payment_failure_faq.txt"],
+      "expected_keywords": ["PAY-402", "Insufficient funds"],
+      "should_abstain": false,
+      "category": "payment",
+      "difficulty": "easy",
+      "probes": "exact-identifier retrieval; dense-only retrieval typically confuses the PAY-4xx codes"
+    },
+    {
+      "id": "GC-004",
+      "question": "What evidence do I need to send for a damaged item claim?",
+      "ground_truth": "A damage claim requires at least three photographs showing the outer packaging, the damaged area, and the shipping label, plus the order number, the item serial number where present, and a short description of the damage.",
+      "expected_sources": ["damaged_product_policy.txt"],
+      "expected_keywords": ["three photographs", "shipping label"],
+      "should_abstain": false,
+      "category": "damaged",
+      "difficulty": "easy",
+      "probes": "list completeness; partial answers are a common failure here"
+    },
+    {
+      "id": "GC-005",
+      "question": "My parcel never turned up. When do you count it as actually lost?",
+      "ground_truth": "A domestic parcel is formally declared lost after 10 business days with no delivery scan, and an international parcel after 21 business days. The customer then chooses a replacement or a full refund, with no return required.",
+      "expected_sources": ["delivery_policy.txt"],
+      "expected_keywords": ["10 business days", "21 business days"],
+      "should_abstain": false,
+      "category": "delivery",
+      "difficulty": "medium",
+      "probes": "colloquial phrasing that does not match policy vocabulary; exercises query rewriting"
+    },
+    {
+      "id": "GC-006",
+      "question": "My AuraBrew X200 is showing E04, what should I do?",
+      "ground_truth": "E04 means a descale is required. Run the descale cycle with one cleaning tablet in a full tank, holding the two-cup button for 5 seconds. The cycle takes 18 minutes and must not be interrupted. Vinegar must not be used, as it voids the warranty.",
+      "expected_sources": ["product_manual_example.txt"],
+      "expected_keywords": ["E04", "18 minutes"],
+      "should_abstain": false,
+      "category": "product_manual",
+      "difficulty": "medium",
+      "probes": "error code lookup plus procedure retrieval from a second section of the same document"
+    },
+    {
+      "id": "GC-007",
+      "question": "Will you charge me a restocking fee if the appliance arrived damaged?",
+      "ground_truth": "No. Restocking fees are capped at 15 percent for opened large appliances, but they are never applied to items returned under the damaged-goods route.",
+      "expected_sources": ["refund_policy.txt"],
+      "expected_keywords": ["15 percent", "never applied"],
+      "should_abstain": false,
+      "category": "refund",
+      "difficulty": "hard",
+      "probes": "negation handling; the retrieved passage contains both the fee and its exception"
+    },
+    {
+      "id": "GC-008",
+      "question": "I only noticed the damage after unboxing a few days later. Is it too late?",
+      "ground_truth": "No, provided it is reported within 7 calendar days of delivery. Concealed damage discovered after unboxing has a 7-day reporting window, while visible transit damage must be reported within 48 hours.",
+      "expected_sources": ["damaged_product_policy.txt"],
+      "expected_keywords": ["7 calendar days", "48 hours"],
+      "should_abstain": false,
+      "category": "damaged",
+      "difficulty": "hard",
+      "probes": "the model must select the concealed-damage window and not the 48-hour one"
+    },
+    {
+      "id": "GC-009",
+      "question": "Can I get a mortgage or a personal loan through your store?",
+      "ground_truth": "This is not covered by the available support policies. The correct behaviour is to abstain and direct the customer to a human agent.",
+      "expected_sources": [],
+      "expected_keywords": [],
+      "should_abstain": true,
+      "category": "out_of_scope",
+      "difficulty": "easy",
+      "probes": "abstention on an out-of-domain question; the corpus mentions payments and credit, which invites a plausible hallucination"
+    },
+    {
+      "id": "GC-010",
+      "question": "The espresso machine arrived cracked. Do I have to pay to send it back?",
+      "ground_truth": "No. Customers are never asked to pay return shipping for a validated damage claim. Visible transit damage must be reported within 48 hours of delivery, and the resolution options are a free replacement, a full refund including shipping, or a repair credit of up to 40 percent.",
+      "expected_sources": ["damaged_product_policy.txt"],
+      "expected_keywords": ["never asked to pay return shipping", "48 hours"],
+      "should_abstain": false,
+      "category": "damaged",
+      "difficulty": "hard",
+      "probes": "cross-document temptation; the Return Policy 4.99 GBP label fee is a plausible wrong answer"
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+# Delivery Policy
+Document ID: POL-DEL-2025
+Version: 4.1
+Effective date: 2025-03-01
+Owner: Fulfilment Operations
+
+## 1. Delivery options and lead times
+| Service | Cut-off | Lead time | Cost |
+| --- | --- | --- | --- |
+| Standard | 20:00 | 3 to 5 business days | 3.99 GBP, free above 40 GBP |
+| Express | 20:00 | Next business day | 6.99 GBP |
+| Named day | 18:00 | Chosen date | 8.99 GBP |
+| Click and collect | 16:00 | 2 business days | Free |
+
+Lead times exclude weekends and public holidays. Orders to the Scottish Highlands, Northern Ireland, and offshore islands add 1 to 2 business days.
+
+## 2. Tracking
+A tracking number is issued when the parcel leaves the warehouse. Tracking events can lag the physical parcel by up to 12 hours. A parcel showing no scan for 3 consecutive business days is treated as potentially lost and enters investigation status DEL-INV-03.
+
+## 3. Lost parcels
+A parcel is formally declared lost after 10 business days without a delivery scan for domestic orders, and 21 business days for international orders. Once declared lost, the customer chooses a replacement or a full refund. No return is required.
+
+## 4. Delivered but not received
+Where tracking shows "delivered" but the customer has not received the parcel, the customer should:
+
+1. Check with neighbours and any safe place noted on the tracking page.
+2. Wait 24 hours, because some carriers scan early.
+3. Raise a non-receipt claim, which triggers a carrier investigation lasting up to 5 business days.
+
+A photograph of delivery supplied by the carrier is evidence but is not conclusive on its own.
+
+## 5. Failed delivery attempts
+Carriers make two delivery attempts. After the second failure the parcel is held at a local depot for 7 calendar days, then returned to us. Returned-to-sender parcels are refunded minus the original outbound shipping charge, under reason code DEL-RTS-02.
+
+## 6. Address changes
+Delivery addresses can be edited until the order reaches status "picking". After that point the address is locked, and the parcel must be redirected through the carrier's own portal, where available.

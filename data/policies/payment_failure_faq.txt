@@ -1,0 +1,31 @@
+# Payment Failure FAQ
+Document ID: FAQ-PAY-2025
+Version: 2.0
+Effective date: 2025-02-20
+Owner: Payments Engineering
+
+## 1. What the customer sees
+When a payment is declined the checkout shows a short message and a gateway code. Support agents should always ask for the code, because the customer-facing message is deliberately generic to avoid aiding card fraud.
+
+## 2. Gateway error codes
+| Code | Meaning | Customer action |
+| --- | --- | --- |
+| PAY-402 | Insufficient funds | Retry with another card or top up the account |
+| PAY-403 | Issuer declined, no reason given | Contact the card issuer; retries usually fail |
+| PAY-405 | 3-D Secure challenge abandoned or timed out | Retry and complete the bank verification step |
+| PAY-409 | Duplicate transaction detected within 90 seconds | Wait 2 minutes; do not re-submit immediately |
+| PAY-422 | Address verification (AVS) mismatch | Correct the billing address to match the card statement |
+| PAY-500 | Gateway timeout on our side | Retry after 10 minutes; no charge is taken |
+| PAY-503 | Payment provider outage | Check the status page; order is held for 60 minutes |
+
+## 3. Pending charges that are not orders
+A declined attempt can still leave a pending authorisation on the customer's statement. Authorisations are released automatically by the issuing bank, typically within 3 to 5 business days, and up to 10 business days for some debit cards. We cannot release the authorisation ourselves; only the issuing bank can.
+
+## 4. Repeated failures on the same card
+After three consecutive failures on the same card within one hour, the card is temporarily blocked for 24 hours under rule PAY-BLK-03. This is an anti-fraud control and cannot be lifted by support agents.
+
+## 5. Failed payment on a subscription
+A failed subscription renewal is retried on day 1, day 3, and day 7. After the third failure the subscription moves to status SUB-SUSPENDED and access is paused. Reactivating within 30 days preserves the original renewal date; after 30 days the subscription must be recreated.
+
+## 6. Refund of a failed payment
+A failed payment is never charged, so there is nothing to refund. If a customer sees a completed charge with no order, escalate to Payments Engineering with the gateway code and the last four digits of the card, using the internal claim form; do not request the full card number.

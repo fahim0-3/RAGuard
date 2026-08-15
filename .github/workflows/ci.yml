@@ -1,0 +1,119 @@
+name: CI
+
+# Tier 1 of the evaluation strategy: everything here is deterministic and free.
+# No LLM is called, so an identical commit always produces an identical verdict.
+# LLM-judged metrics run in nightly-eval.yml and never block a merge.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.12"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install ruff
+      - run: ruff check .
+      - name: Formatting (advisory)
+        continue-on-error: true
+        run: ruff format --diff .
+
+  fast-tests:
+    name: Fast tests (no models, no database)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install minimal test dependencies
+        # Deliberately avoids torch: this job must stay under a minute so that
+        # dataset-integrity and guard-logic failures are reported immediately.
+        run: |
+          pip install pytest pydantic pydantic-settings python-dotenv \
+                      langchain-core rank-bm25
+      - name: Run fast tier
+        run: pytest -m "not integration and not heavy and not llm" -v
+
+  evaluation-gate:
+    name: Golden dataset regression gate
+    runs-on: ubuntu-latest
+    needs: [lint, fast-tests]
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: raguard
+          POSTGRES_PASSWORD: raguard
+          POSTGRES_DB: raguard
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U raguard -d raguard"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://raguard:raguard@localhost:5432/raguard
+      MODEL_DEVICE: cpu
+      HF_HOME: ${{ github.workspace }}/.hf-cache
+      # No GOOGLE_API_KEY on purpose. If this job ever needs one, a
+      # non-deterministic dependency has leaked into the merge gate.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Cache Hugging Face weights
+        # BGE-M3 and the reranker are roughly 4.5 GB combined. Without this
+        # cache every run spends several minutes downloading them.
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.hf-cache
+          key: hf-${{ runner.os }}-bge-m3-reranker-v2-m3-v1
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+
+      - name: Ingest corpus
+        run: python -m src.ingestion.ingest --reset
+
+      - name: Run deterministic retrieval evaluation
+        run: |
+          python -m src.evaluation.run_eval \
+            --tier retrieval \
+            --save \
+            --fail-on-regression
+
+      - name: Run integration tests
+        run: pytest -m "integration and not llm" -v
+
+      - name: Upload evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-report-${{ github.sha }}
+          path: reports/
+          retention-days: 30

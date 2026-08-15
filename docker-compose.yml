@@ -1,0 +1,44 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: raguard-db
+    environment:
+      POSTGRES_USER: raguard
+      POSTGRES_PASSWORD: raguard
+      POSTGRES_DB: raguard
+    ports:
+      # Host port 5433 avoids clashing with a local PostgreSQL install.
+      - "5433:5432"
+    volumes:
+      - raguard_pgdata:/var/lib/postgresql/data
+      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U raguard -d raguard"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: raguard-api
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://raguard:raguard@db:5432/raguard
+      LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      MODEL_DEVICE: cpu
+      HF_HOME: /models
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist Hugging Face weights so the ~2.5 GB download happens once.
+      - raguard_models:/models
+    profiles: ["full"]
+
+volumes:
+  raguard_pgdata:
+  raguard_models:

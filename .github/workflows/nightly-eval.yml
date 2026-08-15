@@ -1,0 +1,91 @@
+name: Nightly evaluation
+
+# Tier 2: end-to-end and Ragas metrics. These call an LLM, so they cost quota
+# and vary between runs on identical code. They are reported as evidence and
+# never block a merge; blocking on a flaky metric teaches the team to ignore
+# the gate, which defeats the purpose of the gate.
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: "Which tier to run"
+        type: choice
+        options: [e2e, ragas, both]
+        default: both
+
+jobs:
+  llm-evaluation:
+    name: LLM-judged evaluation
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: raguard
+          POSTGRES_PASSWORD: raguard
+          POSTGRES_DB: raguard
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U raguard -d raguard"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://raguard:raguard@localhost:5432/raguard
+      MODEL_DEVICE: cpu
+      HF_HOME: ${{ github.workspace }}/.hf-cache
+      LLM_PROVIDER: gemini
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.hf-cache
+          key: hf-${{ runner.os }}-bge-m3-reranker-v2-m3-v1
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+
+      - name: Ingest corpus
+        run: python -m src.ingestion.ingest --reset
+
+      - name: End-to-end evaluation
+        if: inputs.tier != 'ragas'
+        run: python -m src.evaluation.run_eval --tier e2e --save
+
+      - name: Ragas evaluation
+        if: inputs.tier != 'e2e'
+        run: python -m src.evaluation.run_eval --tier ragas --save
+
+      - name: Publish summary
+        if: always()
+        run: |
+          echo "## Nightly evaluation" >> "$GITHUB_STEP_SUMMARY"
+          for report in reports/*.json; do
+            echo "### $(basename "$report")" >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            python -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))['metrics'], indent=2))" "$report" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-evaluation-${{ github.run_id }}
+          path: reports/
+          retention-days: 90

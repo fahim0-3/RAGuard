@@ -1,0 +1,30 @@
+# Return Policy
+Document ID: POL-RT-2024
+Version: 2.8
+Effective date: 2024-09-15
+Owner: Reverse Logistics
+
+## 1. Return window
+Standard items may be returned within 30 calendar days of delivery. Electronics carry a shorter 14-day return window, tracked internally as rule RT-014. Seasonal and clearance stock carries a 7-day window under rule RT-007.
+
+A return is distinct from a refund: the return governs the physical movement of goods, the refund governs the movement of money. A refund is only released after the return passes inspection.
+
+## 2. Condition requirements
+Returned items must be unused, in original packaging, and include all accessories, cables, and documentation. Items failing inspection are assigned inspection code RT-REJ-02 and returned to the customer at their expense.
+
+Hygiene items such as earphones and grooming devices may only be returned if the tamper seal is intact.
+
+## 3. How to start a return
+1. Open the order in the account area and select "Start a return".
+2. Choose a reason. Reasons "damaged on arrival" and "wrong item sent" route to the free returns path.
+3. Print the prepaid label, or request a QR code for label-free drop-off.
+4. Hand the parcel to the carrier within 14 days of the label being issued. Labels expire after 14 days and must be regenerated.
+
+## 4. Return shipping costs
+Return shipping is free when the return reason is a fulfilment or quality fault. For change-of-mind returns, a flat 4.99 GBP label fee is deducted from the refund unless the customer holds an active Plus membership.
+
+## 5. Exchanges
+Direct exchanges are available for size and colour variants of the same product only. The replacement ships once the original item is scanned at the warehouse. If the variant is out of stock, the return converts automatically to a refund.
+
+## 6. International returns
+Orders shipped outside the United Kingdom must use the international returns portal. Customers are responsible for customs paperwork. Import duties already paid are not refundable by us and must be reclaimed from the local customs authority.

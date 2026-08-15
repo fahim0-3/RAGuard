@@ -1,0 +1,39 @@
+# Refund Policy
+Document ID: POL-RF-2024
+Version: 3.2
+Effective date: 2024-11-01
+Owner: Customer Care Operations
+
+## 1. Refund eligibility window
+Customers may request a refund within 30 calendar days of the delivery date recorded by the carrier. Requests submitted after day 30 are rejected automatically by the refund engine with reason code RF-101 (WINDOW_EXPIRED).
+
+Digital goods, gift cards, and downloadable product manuals are non-refundable once the download link has been accessed. The engine returns reason code RF-140 (DIGITAL_CONSUMED) for these cases.
+
+## 2. Refund processing times
+Once a refund is approved, funds are released to the original payment method on the following schedule:
+
+- Credit and debit cards: 5 to 7 business days
+- PayPal: 3 to 5 business days
+- Bank transfer (SEPA or BACS): 7 to 10 business days
+- Store credit: immediate
+
+The processing clock starts when the returned item is scanned at the warehouse, not when the customer posts the parcel.
+
+## 3. Partial refunds
+A partial refund is issued when an order contains multiple items and only some are returned. Shipping charges are refunded in full only when the entire order is returned, or when the return is caused by a fulfilment error on our side.
+
+Restocking fees apply to opened large appliances and are capped at 15 percent of the item price. Restocking fees are never applied to items returned under the damaged-goods route described in the Damaged Product Policy.
+
+## 4. Refunds to expired or closed payment methods
+If the original payment method is closed, the refund is issued as store credit within 2 business days and the customer is notified by email. Store credit issued this way does not expire.
+
+## 5. Escalation
+Refunds above 500 GBP require manual approval by a Tier 2 agent. Refunds above 2000 GBP require Finance sign-off and may take an additional 3 business days.
+
+## 6. Exclusions
+The following are excluded from refunds under all circumstances:
+
+- Personalised or engraved items
+- Perishable goods
+- Items marked "final sale" at the point of purchase
+- Orders placed more than 12 months ago

@@ -1,0 +1,39 @@
+# Damaged Product Policy
+Document ID: POL-DMG-2025
+Version: 1.4
+Effective date: 2025-01-10
+Owner: Quality and Claims
+
+## 1. Reporting window
+Visible transit damage must be reported within 48 hours of delivery. Concealed damage, meaning damage discovered after unboxing, must be reported within 7 calendar days. Claims outside these windows are handled under the standard Return Policy instead, and lose the free-replacement entitlement.
+
+## 2. Evidence required
+A damage claim requires:
+
+- At least three photographs: the outer packaging, the damaged area, and the shipping label
+- The order number and the item serial number where present
+- A short description of the damage
+
+Claims lacking photographic evidence are held at status DMG-HOLD-01 until the customer supplies them. Claims are auto-closed after 14 days at this status.
+
+## 3. Resolution options
+Once a claim is validated the customer selects one of the following:
+
+- Free replacement, shipped within 2 business days, subject to stock
+- Full refund including all shipping charges
+- Repair credit of up to 40 percent of the item price where the customer wishes to keep the item
+
+Customers are never asked to pay return shipping for a validated damage claim.
+
+## 4. Items that must not be returned
+For hygiene and safety reasons, damaged items in the following categories are refunded or replaced without a physical return. The customer is asked to dispose of the item responsibly:
+
+- Damaged food and beverage products
+- Cracked glassware under 25 GBP
+- Leaking batteries and any item showing swelling or thermal damage
+
+## 5. Serial-number-locked products
+Products with a locked serial number, such as smart home hubs in the SH-series, require a device de-registration step before replacement. The claim status shows DMG-DEREG-PENDING until de-registration completes. This step usually takes under one hour.
+
+## 6. Repeat claims
+Accounts filing more than four damage claims in a rolling 90-day period are flagged for manual review under rule DMG-RVW-04. Review does not block the current claim; it applies to subsequent claims only.

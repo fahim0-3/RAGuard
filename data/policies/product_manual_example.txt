@@ -1,0 +1,39 @@
+# Product Manual: AuraBrew X200 Espresso Machine
+Document ID: MAN-AB-X200
+Model number: AB-X200-EU
+Firmware: 2.6.1
+Warranty: 24 months
+
+## 1. In the box
+- AuraBrew X200 body
+- 58 mm portafilter and two baskets (single, double)
+- Water tank, 1.8 litres
+- Cleaning tablets, pack of 4
+- Water hardness test strip
+
+## 2. First use
+1. Rinse the water tank and fill to the MAX line with fresh cold water.
+2. Power on using the rear switch. The ring light pulses amber while heating.
+3. Run one blank cycle without coffee to prime the boiler.
+4. Set the water hardness using the test strip and the menu path Settings > Water > Hardness.
+
+Heat-up takes approximately 35 seconds from cold.
+
+## 3. Error codes
+| Code | Meaning | Fix |
+| --- | --- | --- |
+| E01 | Water tank empty or not seated | Refill and reseat the tank until it clicks |
+| E02 | Boiler temperature sensor fault | Power off for 10 minutes; if it repeats, the unit needs service |
+| E03 | Pump over-pressure, grind too fine | Coarsen the grind and reduce the dose |
+| E04 | Descale required | Run the descale cycle described in section 5 |
+| E05 | Steam wand blocked | Purge the wand and clean the tip with the supplied pin |
+| E07 | Firmware update interrupted | Reconnect to power and retry from the app |
+
+## 4. Daily cleaning
+Purge the group head for 2 seconds after each session. Wipe the steam wand immediately after use, then purge for 1 second. Do not immerse the portafilter handle in water.
+
+## 5. Descaling
+Descale every 3 months, or when E04 appears. Use one cleaning tablet in a full tank, then hold the two-cup button for 5 seconds to start the cycle. The cycle takes 18 minutes and must not be interrupted. Vinegar must not be used, as it voids the warranty.
+
+## 6. Warranty and service
+The 24-month warranty covers manufacturing defects. It excludes scale damage caused by skipped descaling, damage from third-party cleaning agents, and cosmetic wear. Warranty service requires the model number AB-X200-EU and the serial number printed under the drip tray.
