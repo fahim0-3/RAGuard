@@ -1,5 +1,5 @@
-# Damaged Product Policy
-Document ID: POL-DMG-2025
+# Damaged Product Policy (DMG-003)
+Document ID: DMG-003
 Version: 1.4
 Effective date: 2025-01-10
 Owner: Quality and Claims

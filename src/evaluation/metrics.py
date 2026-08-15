@@ -36,13 +36,23 @@ BASELINE_PATH = Path(__file__).with_name("baseline.json")
 # --------------------------------------------------------------------------
 
 
+def resolve_dataset_path(path: Path | None = None) -> Path:
+    """Explicit argument wins, then GOLDEN_DATASET_PATH, then the packaged file."""
+    if path is not None:
+        return path
+    from src.config import get_settings
+
+    configured = get_settings().absolute_golden_dataset_path
+    return configured if configured.exists() else GOLDEN_DATASET_PATH
+
+
 def load_golden_dataset(path: Path | None = None) -> list[dict[str, Any]]:
-    data = json.loads((path or GOLDEN_DATASET_PATH).read_text(encoding="utf-8"))
+    data = json.loads(resolve_dataset_path(path).read_text(encoding="utf-8"))
     return data["cases"]
 
 
 def golden_dataset_version(path: Path | None = None) -> str:
-    data = json.loads((path or GOLDEN_DATASET_PATH).read_text(encoding="utf-8"))
+    data = json.loads(resolve_dataset_path(path).read_text(encoding="utf-8"))
     return data.get("version", "unknown")
 
 

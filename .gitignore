@@ -26,8 +26,11 @@ htmlcov/
 models/
 *.pkl
 
-# --- Evaluation output (baselines are committed, reports are not) ---
-reports/
+# --- Evaluation output ---
+# Transient run reports stay out of git. The measured Phase B baseline is a
+# record of what retrieval actually scored, so it belongs in history.
+reports/*
+!reports/retrieval_baseline.json
 !src/evaluation/baseline.json
 
 # --- Editors and OS ---

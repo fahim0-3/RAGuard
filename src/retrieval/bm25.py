@@ -58,6 +58,24 @@ class BM25Index:
     def size(self) -> int:
         return len(self._chunks)
 
+    def config(self) -> dict[str, object]:
+        """Configuration block recorded in evaluation reports.
+
+        Parameters are read off the live BM25Okapi instance rather than
+        hard-coded, so the report always reflects what actually ran.
+        """
+        return {
+            "library": "rank_bm25",
+            "algorithm": "BM25Okapi",
+            "k1": getattr(self._bm25, "k1", None),
+            "b": getattr(self._bm25, "b", None),
+            "epsilon": getattr(self._bm25, "epsilon", None),
+            "corpus_size": self.size,
+            "tokenizer": "lowercase; identifiers preserved; hyphenated sub-tokens expanded",
+            "stopwords": sorted(_STOPWORDS),
+            "zero_score_hits_dropped": True,
+        }
+
     def build(self, chunks: list[RetrievedChunk] | None = None) -> None:
         if chunks is None:
             # Imported here so that `tokenize` and the index class remain usable

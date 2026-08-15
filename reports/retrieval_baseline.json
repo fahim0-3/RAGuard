@@ -1,0 +1,1610 @@
+{
+  "report": "retrieval_baseline",
+  "phase": "B",
+  "timestamp": "2026-08-15T10:54:29.579358+00:00",
+  "dataset": {
+    "path": "src\\evaluation\\golden_dataset.json",
+    "version": "2026-08-15_golden_v1",
+    "total_cases": 10,
+    "scored_cases": 9,
+    "abstention_cases_excluded": 1
+  },
+  "corpus": {
+    "chunks_indexed": 22,
+    "documents": 6,
+    "policy_ids": {
+      "damaged_product_policy.txt": "DMG-003",
+      "delivery_policy.txt": "DEL-004",
+      "payment_failure_faq.txt": "PAY-005",
+      "product_manual_example.txt": "MAN-006",
+      "refund_policy.txt": "REF-001",
+      "return_policy.txt": "RET-002"
+    },
+    "chunk_size": 800,
+    "chunk_overlap": 120
+  },
+  "configuration": {
+    "retrieval": {
+      "strategy": "hybrid_bm25_dense_rrf",
+      "dense_top_k": 20,
+      "sparse_top_k": 20,
+      "final_top_k": 20,
+      "reranking_applied": false
+    },
+    "bm25": {
+      "library": "rank_bm25",
+      "algorithm": "BM25Okapi",
+      "k1": 1.5,
+      "b": 0.75,
+      "epsilon": 0.25,
+      "corpus_size": 22,
+      "tokenizer": "lowercase; identifiers preserved; hyphenated sub-tokens expanded",
+      "stopwords": [
+        "a",
+        "an",
+        "and",
+        "are",
+        "for",
+        "in",
+        "is",
+        "it",
+        "of",
+        "on",
+        "or",
+        "the",
+        "to"
+      ],
+      "zero_score_hits_dropped": true
+    },
+    "vector": {
+      "embedding_model": "BAAI/bge-m3",
+      "dimension": 1024,
+      "metric": "cosine",
+      "operator": "<=>",
+      "index": "hnsw (vector_cosine_ops)",
+      "normalised_embeddings": true,
+      "top_k": 20
+    },
+    "rrf": {
+      "algorithm": "reciprocal_rank_fusion",
+      "formula": "sum(1 / (k + rank))",
+      "k": 60,
+      "rank_origin": 1,
+      "tie_break": "ascending chunk_id",
+      "scores_preserved": [
+        "dense_score",
+        "sparse_score",
+        "fusion_score"
+      ],
+      "ranks_preserved": true
+    },
+    "deduplication": {
+      "enabled": true,
+      "similarity": "jaccard over BM25 token sets",
+      "near_duplicate_threshold": 0.9,
+      "adjacent_threshold": 0.7,
+      "max_adjacent_run": 5,
+      "order": "rank order preserved; highest-ranked duplicate survives"
+    }
+  },
+  "measured_metrics": {
+    "hit_rate_at_1": 0.7778,
+    "hit_rate_at_3": 0.8889,
+    "hit_rate_at_5": 1.0,
+    "recall_at_5": 1.0,
+    "recall_at_10": 1.0,
+    "mrr_at_5": 0.8611,
+    "keyword_recall": 1.0
+  },
+  "failure_summary": {
+    "failed_case_count": 0,
+    "failed_case_ids": []
+  },
+  "cases": [
+    {
+      "case_id": "GC-001",
+      "question": "How long does a refund take to reach my credit card?",
+      "category": "refund",
+      "difficulty": "easy",
+      "should_abstain": false,
+      "expected_sources": [
+        "refund_policy.txt"
+      ],
+      "expected_policy_ids": [
+        "REF-001"
+      ],
+      "retrieved_sources": [
+        "refund_policy.txt",
+        "refund_policy.txt",
+        "refund_policy.txt",
+        "payment_failure_faq.txt",
+        "refund_policy.txt",
+        "payment_failure_faq.txt",
+        "return_policy.txt",
+        "return_policy.txt",
+        "payment_failure_faq.txt",
+        "damaged_product_policy.txt",
+        "payment_failure_faq.txt",
+        "return_policy.txt",
+        "damaged_product_policy.txt",
+        "delivery_policy.txt",
+        "delivery_policy.txt",
+        "delivery_policy.txt",
+        "damaged_product_policy.txt",
+        "damaged_product_policy.txt",
+        "product_manual_example.txt",
+        "delivery_policy.txt"
+      ],
+      "retrieved_policy_ids": [
+        "REF-001",
+        "REF-001",
+        "REF-001",
+        "PAY-005",
+        "REF-001",
+        "PAY-005",
+        "RET-002",
+        "RET-002",
+        "PAY-005",
+        "DMG-003",
+        "PAY-005",
+        "RET-002",
+        "DMG-003",
+        "DEL-004",
+        "DEL-004",
+        "DEL-004",
+        "DMG-003",
+        "DMG-003",
+        "MAN-006",
+        "DEL-004"
+      ],
+      "metrics": {
+        "hit_rate_at_1": 1.0,
+        "hit_rate_at_3": 1.0,
+        "hit_rate_at_5": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "mrr_at_5": 1.0
+      },
+      "first_relevant_rank": 1,
+      "expected_keywords": [
+        "5 to 7 business days"
+      ],
+      "missing_keywords": [],
+      "keyword_recall": 1.0,
+      "failed": false,
+      "failure_reasons": [],
+      "top_results": [
+        {
+          "rank": 1,
+          "chunk_id": 39,
+          "policy_id": "REF-001",
+          "source": "refund_policy.txt",
+          "chunk_index": 1,
+          "bm25_score": 3.4242,
+          "vector_score": 0.7677,
+          "rrf_score": 0.032266,
+          "retriever_ranks": {
+            "dense": 1,
+            "sparse": 3
+          },
+          "content_preview": "[Refund Policy (REF-001) > 2. Refund processing times]\n## 2. Refund processing times\nOnce a refund is approved, funds are released to the original payment method on the following schedule:\n\n- Credit and debit cards: 5 to 7 business days\n- PayPal: 3 t"
+        },
+        {
+          "rank": 2,
+          "chunk_id": 40,
+          "policy_id": "REF-001",
+          "source": "refund_policy.txt",
+          "chunk_index": 2,
+          "bm25_score": 4.9574,
+          "vector_score": 0.6329,
+          "rrf_score": 0.031778,
+          "retriever_ranks": {
+            "dense": 5,
+            "sparse": 1
+          },
+          "content_preview": "[Refund Policy (REF-001) > 3. Partial refunds]\n## 3. Partial refunds\nA partial refund is issued when an order contains multiple items and only some are returned. Shipping charges are refunded in full only when the entire order is returned, or when th"
+        },
+        {
+          "rank": 3,
+          "chunk_id": 41,
+          "policy_id": "REF-001",
+          "source": "refund_policy.txt",
+          "chunk_index": 3,
+          "bm25_score": 3.4682,
+          "vector_score": 0.6384,
+          "rrf_score": 0.031754,
+          "retriever_ranks": {
+            "dense": 4,
+            "sparse": 2
+          },
+          "content_preview": "[Refund Policy (REF-001) > 5. Escalation]\n## 5. Escalation\nRefunds above 500 GBP require manual approval by a Tier 2 agent. Refunds above 2000 GBP require Finance sign-off and may take an additional 3 business days.\n\n## 6. Exclusions\nThe following ar"
+        },
+        {
+          "rank": 4,
+          "chunk_id": 34,
+          "policy_id": "PAY-005",
+          "source": "payment_failure_faq.txt",
+          "chunk_index": 3,
+          "bm25_score": 2.5112,
+          "vector_score": 0.6035,
+          "rrf_score": 0.03031,
+          "retriever_ranks": {
+            "dense": 7,
+            "sparse": 5
+          },
+          "content_preview": "[Payment Failure FAQ (PAY-005) > 5. Failed payment on a subscription]\n## 5. Failed payment on a subscription\nA failed subscription renewal is retried on day 1, day 3, and day 7. After the third failure the subscription moves to status SUB-SUSPENDED a"
+        },
+        {
+          "rank": 5,
+          "chunk_id": 38,
+          "policy_id": "REF-001",
+          "source": "refund_policy.txt",
+          "chunk_index": 0,
+          "bm25_score": 0.6944,
+          "vector_score": 0.6873,
+          "rrf_score": 0.030214,
+          "retriever_ranks": {
+            "dense": 2,
+            "sparse": 11
+          },
+          "content_preview": "[Refund Policy (REF-001) > 1. Refund eligibility window]\n# Refund Policy (REF-001)\nDocument ID: REF-001\nVersion: 3.2\nEffective date: 2024-11-01\nOwner: Customer Care Operations\n\n## 1. Refund eligibility window\nCustomers may request a refund within 30 "
+        }
+      ],
+      "dropped_by_deduplication": []
+    },
+    {
+      "case_id": "GC-002",
+      "question": "I bought a laptop three weeks ago, can I still return it?",
+      "category": "return",
+      "difficulty": "medium",
+      "should_abstain": false,
+      "expected_sources": [
+        "return_policy.txt"
+      ],
+      "expected_policy_ids": [
+        "RET-002"
+      ],
+      "retrieved_sources": [
+        "refund_policy.txt",
+        "return_policy.txt",
+        "return_policy.txt",
+        "damaged_product_policy.txt",
+        "delivery_policy.txt",
+        "payment_failure_faq.txt",
+        "damaged_product_policy.txt",
+        "refund_policy.txt",
+        "return_policy.txt",
+        "damaged_product_policy.txt",
+        "delivery_policy.txt",
+        "refund_policy.txt",
+        "refund_policy.txt",
+        "delivery_policy.txt",
+        "damaged_product_policy.txt",
+        "payment_failure_faq.txt",
+        "product_manual_example.txt",
+        "delivery_policy.txt",
+        "payment_failure_faq.txt",
+        "product_manual_example.txt"
+      ],
+      "retrieved_policy_ids": [
+        "REF-001",
+        "RET-002",
+        "RET-002",
+        "DMG-003",
+        "DEL-004",
+        "PAY-005",
+        "DMG-003",
+        "REF-001",
+        "RET-002",
+        "DMG-003",
+        "DEL-004",
+        "REF-001",
+        "REF-001",
+        "DEL-004",
+        "DMG-003",
+        "PAY-005",
+        "MAN-006",
+        "DEL-004",
+        "PAY-005",
+        "MAN-006"
+      ],
+      "metrics": {
+        "hit_rate_at_1": 0.0,
+        "hit_rate_at_3": 1.0,
+        "hit_rate_at_5": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "mrr_at_5": 0.5
+      },
+      "first_relevant_rank": 2,
+      "expected_keywords": [
+        "14-day return window",
+        "RT-014"
+      ],
+      "missing_keywords": [],
+      "keyword_recall": 1.0,
+      "failed": false,
+      "failure_reasons": [],
+      "top_results": [
+        {
+          "rank": 1,
+          "chunk_id": 41,
+          "policy_id": "REF-001",
+          "source": "refund_policy.txt",
+          "chunk_index": 3,
+          "bm25_score": 3.0639,
+          "vector_score": 0.5838,
+          "rrf_score": 0.032002,
+          "retriever_ranks": {
+            "dense": 3,
+            "sparse": 2
+          },
+          "content_preview": "[Refund Policy (REF-001) > 5. Escalation]\n## 5. Escalation\nRefunds above 500 GBP require manual approval by a Tier 2 agent. Refunds above 2000 GBP require Finance sign-off and may take an additional 3 business days.\n\n## 6. Exclusions\nThe following ar"
+        },
+        {
+          "rank": 2,
+          "chunk_id": 42,
+          "policy_id": "RET-002",
+          "source": "return_policy.txt",
+          "chunk_index": 0,
+          "bm25_score": 1.1212,
+          "vector_score": 0.6204,
+          "rrf_score": 0.031545,
+          "retriever_ranks": {
+            "dense": 1,
+            "sparse": 6
+          },
+          "content_preview": "[Return Policy (RET-002) > 1. Return window]\n# Return Policy (RET-002)\nDocument ID: RET-002\nVersion: 2.8\nEffective date: 2024-09-15\nOwner: Reverse Logistics\n\n## 1. Return window\nStandard items may be returned within 30 calendar days of delivery. Elec"
+        },
+        {
+          "rank": 3,
+          "chunk_id": 43,
+          "policy_id": "RET-002",
+          "source": "return_policy.txt",
+          "chunk_index": 1,
+          "bm25_score": 0.8424,
+          "vector_score": 0.5663,
+          "rrf_score": 0.030331,
+          "retriever_ranks": {
+            "dense": 4,
+            "sparse": 8
+          },
+          "content_preview": "[Return Policy (RET-002) > 2. Condition requirements]\n## 2. Condition requirements\nReturned items must be unused, in original packaging, and include all accessories, cables, and documentation. Items failing inspection are assigned inspection code RT-"
+        },
+        {
+          "rank": 4,
+          "chunk_id": 24,
+          "policy_id": "DMG-003",
+          "source": "damaged_product_policy.txt",
+          "chunk_index": 1,
+          "bm25_score": 2.4276,
+          "vector_score": 0.5014,
+          "rrf_score": 0.029762,
+          "retriever_ranks": {
+            "dense": 12,
+            "sparse": 3
+          },
+          "content_preview": "[Damaged Product Policy (DMG-003) > 2. Evidence required]\n## 2. Evidence required\nA damage claim requires:\n\n- At least three photographs: the outer packaging, the damaged area, and the shipping label\n- The order number and the item serial number wher"
+        },
+        {
+          "rank": 5,
+          "chunk_id": 28,
+          "policy_id": "DEL-004",
+          "source": "delivery_policy.txt",
+          "chunk_index": 1,
+          "bm25_score": 2.3957,
+          "vector_score": 0.507,
+          "rrf_score": 0.02971,
+          "retriever_ranks": {
+            "dense": 11,
+            "sparse": 4
+          },
+          "content_preview": "[Delivery Policy (DEL-004) > 2. Tracking]\n## 2. Tracking\nA tracking number is issued when the parcel leaves the warehouse. Tracking events can lag the physical parcel by up to 12 hours. A parcel showing no scan for 3 consecutive business days is trea"
+        }
+      ],
+      "dropped_by_deduplication": []
+    },
+    {
+      "case_id": "GC-003",
+      "question": "What does error PAY-402 mean at checkout?",
+      "category": "payment",
+      "difficulty": "easy",
+      "should_abstain": false,
+      "expected_sources": [
+        "payment_failure_faq.txt"
+      ],
+      "expected_policy_ids": [
+        "PAY-005"
+      ],
+      "retrieved_sources": [
+        "payment_failure_faq.txt",
+        "payment_failure_faq.txt",
+        "refund_policy.txt",
+        "payment_failure_faq.txt",
+        "product_manual_example.txt",
+        "refund_policy.txt",
+        "return_policy.txt",
+        "payment_failure_faq.txt",
+        "refund_policy.txt",
+        "damaged_product_policy.txt",
+        "damaged_product_policy.txt",
+        "return_policy.txt",
+        "delivery_policy.txt",
+        "refund_policy.txt",
+        "return_policy.txt",
+        "delivery_policy.txt",
+        "damaged_product_policy.txt",
+        "delivery_policy.txt",
+        "product_manual_example.txt",
+        "delivery_policy.txt"
+      ],
+      "retrieved_policy_ids": [
+        "PAY-005",
+        "PAY-005",
+        "REF-001",
+        "PAY-005",
+        "MAN-006",
+        "REF-001",
+        "RET-002",
+        "PAY-005",
+        "REF-001",
+        "DMG-003",
+        "DMG-003",
+        "RET-002",
+        "DEL-004",
+        "REF-001",
+        "RET-002",
+        "DEL-004",
+        "DMG-003",
+        "DEL-004",
+        "MAN-006",
+        "DEL-004"
+      ],
+      "metrics": {
+        "hit_rate_at_1": 1.0,
+        "hit_rate_at_3": 1.0,
+        "hit_rate_at_5": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "mrr_at_5": 1.0
+      },
+      "first_relevant_rank": 1,
+      "expected_keywords": [
+        "PAY-402",
+        "Insufficient funds"
+      ],
+      "missing_keywords": [],
+      "keyword_recall": 1.0,
+      "failed": false,
+      "failure_reasons": [],
+      "top_results": [
+        {
+          "rank": 1,
+          "chunk_id": 31,
+          "policy_id": "PAY-005",
+          "source": "payment_failure_faq.txt",
+          "chunk_index": 0,
+          "bm25_score": 9.3406,
+          "vector_score": 0.6242,
+          "rrf_score": 0.032522,
+          "retriever_ranks": {
+            "dense": 2,
+            "sparse": 1
+          },
+          "content_preview": "[Payment Failure FAQ (PAY-005) > 1. What the customer sees]\n# Payment Failure FAQ (PAY-005)\nDocument ID: PAY-005\nVersion: 2.0\nEffective date: 2025-02-20\nOwner: Payments Engineering\n\n## 1. What the customer sees\nWhen a payment is declined the checkout"
+        },
+        {
+          "rank": 2,
+          "chunk_id": 32,
+          "policy_id": "PAY-005",
+          "source": "payment_failure_faq.txt",
+          "chunk_index": 1,
+          "bm25_score": 9.206,
+          "vector_score": 0.6705,
+          "rrf_score": 0.032522,
+          "retriever_ranks": {
+            "dense": 1,
+            "sparse": 2
+          },
+          "content_preview": "[Payment Failure FAQ (PAY-005) > 2. Gateway error codes]\n## 2. Gateway error codes\n| Code | Meaning | Customer action |\n| --- | --- | --- |\n| PAY-402 | Insufficient funds | Retry with another card or top up the account |\n| PAY-403 | Issuer declined, "
+        },
+        {
+          "rank": 3,
+          "chunk_id": 40,
+          "policy_id": "REF-001",
+          "source": "refund_policy.txt",
+          "chunk_index": 2,
+          "bm25_score": 4.3466,
+          "vector_score": 0.4656,
+          "rrf_score": 0.031498,
+          "retriever_ranks": {
+            "dense": 4,
+            "sparse": 3
+          },
+          "content_preview": "[Refund Policy (REF-001) > 3. Partial refunds]\n## 3. Partial refunds\nA partial refund is issued when an order contains multiple items and only some are returned. Shipping charges are refunded in full only when the entire order is returned, or when th"
+        },
+        {
+          "rank": 4,
+          "chunk_id": 33,
+          "policy_id": "PAY-005",
+          "source": "payment_failure_faq.txt",
+          "chunk_index": 2,
+          "bm25_score": 1.635,
+          "vector_score": 0.4996,
+          "rrf_score": 0.030798,
+          "retriever_ranks": {
+            "dense": 3,
+            "sparse": 7
+          },
+          "content_preview": "[Payment Failure FAQ (PAY-005) > 3. Pending charges that are not orders]\n## 3. Pending charges that are not orders\nA declined attempt can still leave a pending authorisation on the customer's statement. Authorisations are released automatically by th"
+        },
+        {
+          "rank": 5,
+          "chunk_id": 36,
+          "policy_id": "MAN-006",
+          "source": "product_manual_example.txt",
+          "chunk_index": 1,
+          "bm25_score": 2.2719,
+          "vector_score": 0.4637,
+          "rrf_score": 0.030769,
+          "retriever_ranks": {
+            "dense": 5,
+            "sparse": 5
+          },
+          "content_preview": "[Product Manual: AuraBrew X200 Espresso Machine (MAN-006) > 3. Error codes]\n## 3. Error codes\n| Code | Meaning | Fix |\n| --- | --- | --- |\n| E01 | Water tank empty or not seated | Refill and reseat the tank until it clicks |\n| E02 | Boiler temperatur"
+        }
+      ],
+      "dropped_by_deduplication": []
+    },
+    {
+      "case_id": "GC-004",
+      "question": "What evidence do I need to send for a damaged item claim?",
+      "category": "damaged",
+      "difficulty": "easy",
+      "should_abstain": false,
+      "expected_sources": [
+        "damaged_product_policy.txt"
+      ],
+      "expected_policy_ids": [
+        "DMG-003"
+      ],
+      "retrieved_sources": [
+        "damaged_product_policy.txt",
+        "damaged_product_policy.txt",
+        "delivery_policy.txt",
+        "damaged_product_policy.txt",
+        "return_policy.txt",
+        "payment_failure_faq.txt",
+        "damaged_product_policy.txt",
+        "refund_policy.txt",
+        "payment_failure_faq.txt",
+        "product_manual_example.txt",
+        "return_policy.txt",
+        "refund_policy.txt",
+        "payment_failure_faq.txt",
+        "delivery_policy.txt",
+        "refund_policy.txt",
+        "refund_policy.txt",
+        "product_manual_example.txt",
+        "return_policy.txt",
+        "product_manual_example.txt",
+        "payment_failure_faq.txt"
+      ],
+      "retrieved_policy_ids": [
+        "DMG-003",
+        "DMG-003",
+        "DEL-004",
+        "DMG-003",
+        "RET-002",
+        "PAY-005",
+        "DMG-003",
+        "REF-001",
+        "PAY-005",
+        "MAN-006",
+        "RET-002",
+        "REF-001",
+        "PAY-005",
+        "DEL-004",
+        "REF-001",
+        "REF-001",
+        "MAN-006",
+        "RET-002",
+        "MAN-006",
+        "PAY-005"
+      ],
+      "metrics": {
+        "hit_rate_at_1": 1.0,
+        "hit_rate_at_3": 1.0,
+        "hit_rate_at_5": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "mrr_at_5": 1.0
+      },
+      "first_relevant_rank": 1,
+      "expected_keywords": [
+        "three photographs",
+        "shipping label"
+      ],
+      "missing_keywords": [],
+      "keyword_recall": 1.0,
+      "failed": false,
+      "failure_reasons": [],
+      "top_results": [
+        {
+          "rank": 1,
+          "chunk_id": 24,
+          "policy_id": "DMG-003",
+          "source": "damaged_product_policy.txt",
+          "chunk_index": 1,
+          "bm25_score": 7.9203,
+          "vector_score": 0.7474,
+          "rrf_score": 0.032787,
+          "retriever_ranks": {
+            "dense": 1,
+            "sparse": 1
+          },
+          "content_preview": "[Damaged Product Policy (DMG-003) > 2. Evidence required]\n## 2. Evidence required\nA damage claim requires:\n\n- At least three photographs: the outer packaging, the damaged area, and the shipping label\n- The order number and the item serial number wher"
+        },
+        {
+          "rank": 2,
+          "chunk_id": 25,
+          "policy_id": "DMG-003",
+          "source": "damaged_product_policy.txt",
+          "chunk_index": 2,
+          "bm25_score": 3.8804,
+          "vector_score": 0.6113,
+          "rrf_score": 0.032002,
+          "retriever_ranks": {
+            "dense": 2,
+            "sparse": 3
+          },
+          "content_preview": "[Damaged Product Policy (DMG-003) > 4. Items that must not be returned]\n## 4. Items that must not be returned\nFor hygiene and safety reasons, damaged items in the following categories are refunded or replaced without a physical return. The customer i"
+        },
+        {
+          "rank": 3,
+          "chunk_id": 29,
+          "policy_id": "DEL-004",
+          "source": "delivery_policy.txt",
+          "chunk_index": 2,
+          "bm25_score": 2.9064,
+          "vector_score": 0.4916,
+          "rrf_score": 0.03055,
+          "retriever_ranks": {
+            "dense": 7,
+            "sparse": 4
+          },
+          "content_preview": "[Delivery Policy (DEL-004) > 4. Delivered but not received]\n## 4. Delivered but not received\nWhere tracking shows \"delivered\" but the customer has not received the parcel, the customer should:\n\n1. Check with neighbours and any safe place noted on the"
+        },
+        {
+          "rank": 4,
+          "chunk_id": 26,
+          "policy_id": "DMG-003",
+          "source": "damaged_product_policy.txt",
+          "chunk_index": 3,
+          "bm25_score": 2.721,
+          "vector_score": 0.5465,
+          "rrf_score": 0.030536,
+          "retriever_ranks": {
+            "dense": 5,
+            "sparse": 6
+          },
+          "content_preview": "[Damaged Product Policy (DMG-003) > 6. Repeat claims]\n## 6. Repeat claims\nAccounts filing more than four damage claims in a rolling 90-day period are flagged for manual review under rule DMG-RVW-04. Review does not block the current claim; it applies"
+        },
+        {
+          "rank": 5,
+          "chunk_id": 43,
+          "policy_id": "RET-002",
+          "source": "return_policy.txt",
+          "chunk_index": 1,
+          "bm25_score": 1.6907,
+          "vector_score": 0.5715,
+          "rrf_score": 0.030331,
+          "retriever_ranks": {
+            "dense": 4,
+            "sparse": 8
+          },
+          "content_preview": "[Return Policy (RET-002) > 2. Condition requirements]\n## 2. Condition requirements\nReturned items must be unused, in original packaging, and include all accessories, cables, and documentation. Items failing inspection are assigned inspection code RT-"
+        }
+      ],
+      "dropped_by_deduplication": []
+    },
+    {
+      "case_id": "GC-005",
+      "question": "My parcel never turned up. When do you count it as actually lost?",
+      "category": "delivery",
+      "difficulty": "medium",
+      "should_abstain": false,
+      "expected_sources": [
+        "delivery_policy.txt"
+      ],
+      "expected_policy_ids": [
+        "DEL-004"
+      ],
+      "retrieved_sources": [
+        "delivery_policy.txt",
+        "refund_policy.txt",
+        "delivery_policy.txt",
+        "damaged_product_policy.txt",
+        "refund_policy.txt",
+        "return_policy.txt",
+        "payment_failure_faq.txt",
+        "return_policy.txt",
+        "payment_failure_faq.txt",
+        "delivery_policy.txt",
+        "payment_failure_faq.txt",
+        "payment_failure_faq.txt",
+        "product_manual_example.txt",
+        "return_policy.txt",
+        "damaged_product_policy.txt",
+        "damaged_product_policy.txt",
+        "delivery_policy.txt",
+        "refund_policy.txt",
+        "product_manual_example.txt",
+        "refund_policy.txt"
+      ],
+      "retrieved_policy_ids": [
+        "DEL-004",
+        "REF-001",
+        "DEL-004",
+        "DMG-003",
+        "REF-001",
+        "RET-002",
+        "PAY-005",
+        "RET-002",
+        "PAY-005",
+        "DEL-004",
+        "PAY-005",
+        "PAY-005",
+        "MAN-006",
+        "RET-002",
+        "DMG-003",
+        "DMG-003",
+        "DEL-004",
+        "REF-001",
+        "MAN-006",
+        "REF-001"
+      ],
+      "metrics": {
+        "hit_rate_at_1": 1.0,
+        "hit_rate_at_3": 1.0,
+        "hit_rate_at_5": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "mrr_at_5": 1.0
+      },
+      "first_relevant_rank": 1,
+      "expected_keywords": [
+        "10 business days",
+        "21 business days"
+      ],
+      "missing_keywords": [],
+      "keyword_recall": 1.0,
+      "failed": false,
+      "failure_reasons": [],
+      "top_results": [
+        {
+          "rank": 1,
+          "chunk_id": 28,
+          "policy_id": "DEL-004",
+          "source": "delivery_policy.txt",
+          "chunk_index": 1,
+          "bm25_score": 10.1138,
+          "vector_score": 0.7027,
+          "rrf_score": 0.032787,
+          "retriever_ranks": {
+            "dense": 1,
+            "sparse": 1
+          },
+          "content_preview": "[Delivery Policy (DEL-004) > 2. Tracking]\n## 2. Tracking\nA tracking number is issued when the parcel leaves the warehouse. Tracking events can lag the physical parcel by up to 12 hours. A parcel showing no scan for 3 consecutive business days is trea"
+        },
+        {
+          "rank": 2,
+          "chunk_id": 39,
+          "policy_id": "REF-001",
+          "source": "refund_policy.txt",
+          "chunk_index": 1,
+          "bm25_score": 2.8415,
+          "vector_score": 0.5267,
+          "rrf_score": 0.031498,
+          "retriever_ranks": {
+            "dense": 3,
+            "sparse": 4
+          },
+          "content_preview": "[Refund Policy (REF-001) > 2. Refund processing times]\n## 2. Refund processing times\nOnce a refund is approved, funds are released to the original payment method on the following schedule:\n\n- Credit and debit cards: 5 to 7 business days\n- PayPal: 3 t"
+        },
+        {
+          "rank": 3,
+          "chunk_id": 29,
+          "policy_id": "DEL-004",
+          "source": "delivery_policy.txt",
+          "chunk_index": 2,
+          "bm25_score": 2.3508,
+          "vector_score": 0.6559,
+          "rrf_score": 0.031281,
+          "retriever_ranks": {
+            "dense": 2,
+            "sparse": 6
+          },
+          "content_preview": "[Delivery Policy (DEL-004) > 4. Delivered but not received]\n## 4. Delivered but not received\nWhere tracking shows \"delivered\" but the customer has not received the parcel, the customer should:\n\n1. Check with neighbours and any safe place noted on the"
+        },
+        {
+          "rank": 4,
+          "chunk_id": 24,
+          "policy_id": "DMG-003",
+          "source": "damaged_product_policy.txt",
+          "chunk_index": 1,
+          "bm25_score": 2.4377,
+          "vector_score": 0.5227,
+          "rrf_score": 0.03031,
+          "retriever_ranks": {
+            "dense": 7,
+            "sparse": 5
+          },
+          "content_preview": "[Damaged Product Policy (DMG-003) > 2. Evidence required]\n## 2. Evidence required\nA damage claim requires:\n\n- At least three photographs: the outer packaging, the damaged area, and the shipping label\n- The order number and the item serial number wher"
+        },
+        {
+          "rank": 5,
+          "chunk_id": 40,
+          "policy_id": "REF-001",
+          "source": "refund_policy.txt",
+          "chunk_index": 2,
+          "bm25_score": 4.0458,
+          "vector_score": 0.5045,
+          "rrf_score": 0.030214,
+          "retriever_ranks": {
+            "dense": 11,
+            "sparse": 2
+          },
+          "content_preview": "[Refund Policy (REF-001) > 3. Partial refunds]\n## 3. Partial refunds\nA partial refund is issued when an order contains multiple items and only some are returned. Shipping charges are refunded in full only when the entire order is returned, or when th"
+        }
+      ],
+      "dropped_by_deduplication": []
+    },
+    {
+      "case_id": "GC-006",
+      "question": "My AuraBrew X200 is showing E04, what should I do?",
+      "category": "product_manual",
+      "difficulty": "medium",
+      "should_abstain": false,
+      "expected_sources": [
+        "product_manual_example.txt"
+      ],
+      "expected_policy_ids": [
+        "MAN-006"
+      ],
+      "retrieved_sources": [
+        "product_manual_example.txt",
+        "product_manual_example.txt",
+        "product_manual_example.txt",
+        "payment_failure_faq.txt",
+        "payment_failure_faq.txt",
+        "delivery_policy.txt",
+        "damaged_product_policy.txt",
+        "delivery_policy.txt",
+        "damaged_product_policy.txt",
+        "return_policy.txt",
+        "refund_policy.txt",
+        "payment_failure_faq.txt",
+        "payment_failure_faq.txt",
+        "damaged_product_policy.txt",
+        "return_policy.txt",
+        "refund_policy.txt",
+        "return_policy.txt",
+        "damaged_product_policy.txt",
+        "delivery_policy.txt",
+        "refund_policy.txt"
+      ],
+      "retrieved_policy_ids": [
+        "MAN-006",
+        "MAN-006",
+        "MAN-006",
+        "PAY-005",
+        "PAY-005",
+        "DEL-004",
+        "DMG-003",
+        "DEL-004",
+        "DMG-003",
+        "RET-002",
+        "REF-001",
+        "PAY-005",
+        "PAY-005",
+        "DMG-003",
+        "RET-002",
+        "REF-001",
+        "RET-002",
+        "DMG-003",
+        "DEL-004",
+        "REF-001"
+      ],
+      "metrics": {
+        "hit_rate_at_1": 1.0,
+        "hit_rate_at_3": 1.0,
+        "hit_rate_at_5": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "mrr_at_5": 1.0
+      },
+      "first_relevant_rank": 1,
+      "expected_keywords": [
+        "E04",
+        "18 minutes"
+      ],
+      "missing_keywords": [],
+      "keyword_recall": 1.0,
+      "failed": false,
+      "failure_reasons": [],
+      "top_results": [
+        {
+          "rank": 1,
+          "chunk_id": 36,
+          "policy_id": "MAN-006",
+          "source": "product_manual_example.txt",
+          "chunk_index": 1,
+          "bm25_score": 6.5256,
+          "vector_score": 0.6236,
+          "rrf_score": 0.032522,
+          "retriever_ranks": {
+            "dense": 1,
+            "sparse": 2
+          },
+          "content_preview": "[Product Manual: AuraBrew X200 Espresso Machine (MAN-006) > 3. Error codes]\n## 3. Error codes\n| Code | Meaning | Fix |\n| --- | --- | --- |\n| E01 | Water tank empty or not seated | Refill and reseat the tank until it clicks |\n| E02 | Boiler temperatur"
+        },
+        {
+          "rank": 2,
+          "chunk_id": 37,
+          "policy_id": "MAN-006",
+          "source": "product_manual_example.txt",
+          "chunk_index": 2,
+          "bm25_score": 6.161,
+          "vector_score": 0.5985,
+          "rrf_score": 0.032002,
+          "retriever_ranks": {
+            "dense": 2,
+            "sparse": 3
+          },
+          "content_preview": "[Product Manual: AuraBrew X200 Espresso Machine (MAN-006) > 5. Descaling]\n## 5. Descaling\nDescale every 3 months, or when E04 appears. Use one cleaning tablet in a full tank, then hold the two-cup button for 5 seconds to start the cycle. The cycle ta"
+        },
+        {
+          "rank": 3,
+          "chunk_id": 35,
+          "policy_id": "MAN-006",
+          "source": "product_manual_example.txt",
+          "chunk_index": 0,
+          "bm25_score": 5.5726,
+          "vector_score": 0.5582,
+          "rrf_score": 0.031498,
+          "retriever_ranks": {
+            "dense": 3,
+            "sparse": 4
+          },
+          "content_preview": "[Product Manual: AuraBrew X200 Espresso Machine (MAN-006) > 1. In the box]\n# Product Manual: AuraBrew X200 Espresso Machine (MAN-006)\nDocument ID: MAN-006\nModel number: AB-X200-EU\nFirmware: 2.6.1\nWarranty: 24 months\n\n## 1. In the box\n- AuraBrew X200 "
+        },
+        {
+          "rank": 4,
+          "chunk_id": 31,
+          "policy_id": "PAY-005",
+          "source": "payment_failure_faq.txt",
+          "chunk_index": 0,
+          "bm25_score": 6.6175,
+          "vector_score": 0.4013,
+          "rrf_score": 0.031099,
+          "retriever_ranks": {
+            "dense": 8,
+            "sparse": 1
+          },
+          "content_preview": "[Payment Failure FAQ (PAY-005) > 1. What the customer sees]\n# Payment Failure FAQ (PAY-005)\nDocument ID: PAY-005\nVersion: 2.0\nEffective date: 2025-02-20\nOwner: Payments Engineering\n\n## 1. What the customer sees\nWhen a payment is declined the checkout"
+        },
+        {
+          "rank": 5,
+          "chunk_id": 32,
+          "policy_id": "PAY-005",
+          "source": "payment_failure_faq.txt",
+          "chunk_index": 1,
+          "bm25_score": 1.4968,
+          "vector_score": 0.4045,
+          "rrf_score": 0.029644,
+          "retriever_ranks": {
+            "dense": 6,
+            "sparse": 9
+          },
+          "content_preview": "[Payment Failure FAQ (PAY-005) > 2. Gateway error codes]\n## 2. Gateway error codes\n| Code | Meaning | Customer action |\n| --- | --- | --- |\n| PAY-402 | Insufficient funds | Retry with another card or top up the account |\n| PAY-403 | Issuer declined, "
+        }
+      ],
+      "dropped_by_deduplication": []
+    },
+    {
+      "case_id": "GC-007",
+      "question": "Will you charge me a restocking fee if the appliance arrived damaged?",
+      "category": "refund",
+      "difficulty": "hard",
+      "should_abstain": false,
+      "expected_sources": [
+        "refund_policy.txt"
+      ],
+      "expected_policy_ids": [
+        "REF-001"
+      ],
+      "retrieved_sources": [
+        "refund_policy.txt",
+        "return_policy.txt",
+        "return_policy.txt",
+        "damaged_product_policy.txt",
+        "damaged_product_policy.txt",
+        "payment_failure_faq.txt",
+        "damaged_product_policy.txt",
+        "delivery_policy.txt",
+        "damaged_product_policy.txt",
+        "product_manual_example.txt",
+        "refund_policy.txt",
+        "payment_failure_faq.txt",
+        "refund_policy.txt",
+        "return_policy.txt",
+        "refund_policy.txt",
+        "product_manual_example.txt",
+        "payment_failure_faq.txt",
+        "delivery_policy.txt",
+        "product_manual_example.txt",
+        "payment_failure_faq.txt"
+      ],
+      "retrieved_policy_ids": [
+        "REF-001",
+        "RET-002",
+        "RET-002",
+        "DMG-003",
+        "DMG-003",
+        "PAY-005",
+        "DMG-003",
+        "DEL-004",
+        "DMG-003",
+        "MAN-006",
+        "REF-001",
+        "PAY-005",
+        "REF-001",
+        "RET-002",
+        "REF-001",
+        "MAN-006",
+        "PAY-005",
+        "DEL-004",
+        "MAN-006",
+        "PAY-005"
+      ],
+      "metrics": {
+        "hit_rate_at_1": 1.0,
+        "hit_rate_at_3": 1.0,
+        "hit_rate_at_5": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "mrr_at_5": 1.0
+      },
+      "first_relevant_rank": 1,
+      "expected_keywords": [
+        "15 percent",
+        "never applied"
+      ],
+      "missing_keywords": [],
+      "keyword_recall": 1.0,
+      "failed": false,
+      "failure_reasons": [],
+      "top_results": [
+        {
+          "rank": 1,
+          "chunk_id": 40,
+          "policy_id": "REF-001",
+          "source": "refund_policy.txt",
+          "chunk_index": 2,
+          "bm25_score": 6.0765,
+          "vector_score": 0.645,
+          "rrf_score": 0.032787,
+          "retriever_ranks": {
+            "dense": 1,
+            "sparse": 1
+          },
+          "content_preview": "[Refund Policy (REF-001) > 3. Partial refunds]\n## 3. Partial refunds\nA partial refund is issued when an order contains multiple items and only some are returned. Shipping charges are refunded in full only when the entire order is returned, or when th"
+        },
+        {
+          "rank": 2,
+          "chunk_id": 44,
+          "policy_id": "RET-002",
+          "source": "return_policy.txt",
+          "chunk_index": 2,
+          "bm25_score": 3.5989,
+          "vector_score": 0.5998,
+          "rrf_score": 0.032258,
+          "retriever_ranks": {
+            "dense": 2,
+            "sparse": 2
+          },
+          "content_preview": "[Return Policy (RET-002) > 4. Return shipping costs]\n## 4. Return shipping costs\nReturn shipping is free when the return reason is a fulfilment or quality fault. For change-of-mind returns, a flat 4.99 GBP label fee is deducted from the refund unless"
+        },
+        {
+          "rank": 3,
+          "chunk_id": 43,
+          "policy_id": "RET-002",
+          "source": "return_policy.txt",
+          "chunk_index": 1,
+          "bm25_score": 1.8957,
+          "vector_score": 0.5863,
+          "rrf_score": 0.03125,
+          "retriever_ranks": {
+            "dense": 4,
+            "sparse": 4
+          },
+          "content_preview": "[Return Policy (RET-002) > 2. Condition requirements]\n## 2. Condition requirements\nReturned items must be unused, in original packaging, and include all accessories, cables, and documentation. Items failing inspection are assigned inspection code RT-"
+        },
+        {
+          "rank": 4,
+          "chunk_id": 25,
+          "policy_id": "DMG-003",
+          "source": "damaged_product_policy.txt",
+          "chunk_index": 2,
+          "bm25_score": 1.5054,
+          "vector_score": 0.5933,
+          "rrf_score": 0.031025,
+          "retriever_ranks": {
+            "dense": 3,
+            "sparse": 6
+          },
+          "content_preview": "[Damaged Product Policy (DMG-003) > 4. Items that must not be returned]\n## 4. Items that must not be returned\nFor hygiene and safety reasons, damaged items in the following categories are refunded or replaced without a physical return. The customer i"
+        },
+        {
+          "rank": 5,
+          "chunk_id": 24,
+          "policy_id": "DMG-003",
+          "source": "damaged_product_policy.txt",
+          "chunk_index": 1,
+          "bm25_score": 1.2531,
+          "vector_score": 0.558,
+          "rrf_score": 0.029877,
+          "retriever_ranks": {
+            "dense": 5,
+            "sparse": 9
+          },
+          "content_preview": "[Damaged Product Policy (DMG-003) > 2. Evidence required]\n## 2. Evidence required\nA damage claim requires:\n\n- At least three photographs: the outer packaging, the damaged area, and the shipping label\n- The order number and the item serial number wher"
+        }
+      ],
+      "dropped_by_deduplication": []
+    },
+    {
+      "case_id": "GC-008",
+      "question": "I only noticed the damage after unboxing a few days later. Is it too late?",
+      "category": "damaged",
+      "difficulty": "hard",
+      "should_abstain": false,
+      "expected_sources": [
+        "damaged_product_policy.txt"
+      ],
+      "expected_policy_ids": [
+        "DMG-003"
+      ],
+      "retrieved_sources": [
+        "damaged_product_policy.txt",
+        "damaged_product_policy.txt",
+        "damaged_product_policy.txt",
+        "product_manual_example.txt",
+        "delivery_policy.txt",
+        "return_policy.txt",
+        "delivery_policy.txt",
+        "refund_policy.txt",
+        "damaged_product_policy.txt",
+        "payment_failure_faq.txt",
+        "product_manual_example.txt",
+        "return_policy.txt",
+        "refund_policy.txt",
+        "refund_policy.txt",
+        "payment_failure_faq.txt",
+        "refund_policy.txt",
+        "delivery_policy.txt",
+        "return_policy.txt",
+        "delivery_policy.txt",
+        "payment_failure_faq.txt"
+      ],
+      "retrieved_policy_ids": [
+        "DMG-003",
+        "DMG-003",
+        "DMG-003",
+        "MAN-006",
+        "DEL-004",
+        "RET-002",
+        "DEL-004",
+        "REF-001",
+        "DMG-003",
+        "PAY-005",
+        "MAN-006",
+        "RET-002",
+        "REF-001",
+        "REF-001",
+        "PAY-005",
+        "REF-001",
+        "DEL-004",
+        "RET-002",
+        "DEL-004",
+        "PAY-005"
+      ],
+      "metrics": {
+        "hit_rate_at_1": 1.0,
+        "hit_rate_at_3": 1.0,
+        "hit_rate_at_5": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "mrr_at_5": 1.0
+      },
+      "first_relevant_rank": 1,
+      "expected_keywords": [
+        "7 calendar days",
+        "48 hours"
+      ],
+      "missing_keywords": [],
+      "keyword_recall": 1.0,
+      "failed": false,
+      "failure_reasons": [],
+      "top_results": [
+        {
+          "rank": 1,
+          "chunk_id": 23,
+          "policy_id": "DMG-003",
+          "source": "damaged_product_policy.txt",
+          "chunk_index": 0,
+          "bm25_score": 6.1438,
+          "vector_score": 0.5896,
+          "rrf_score": 0.032787,
+          "retriever_ranks": {
+            "dense": 1,
+            "sparse": 1
+          },
+          "content_preview": "[Damaged Product Policy (DMG-003) > 1. Reporting window]\n# Damaged Product Policy (DMG-003)\nDocument ID: DMG-003\nVersion: 1.4\nEffective date: 2025-01-10\nOwner: Quality and Claims\n\n## 1. Reporting window\nVisible transit damage must be reported within "
+        },
+        {
+          "rank": 2,
+          "chunk_id": 24,
+          "policy_id": "DMG-003",
+          "source": "damaged_product_policy.txt",
+          "chunk_index": 1,
+          "bm25_score": 3.1509,
+          "vector_score": 0.5463,
+          "rrf_score": 0.032002,
+          "retriever_ranks": {
+            "dense": 2,
+            "sparse": 3
+          },
+          "content_preview": "[Damaged Product Policy (DMG-003) > 2. Evidence required]\n## 2. Evidence required\nA damage claim requires:\n\n- At least three photographs: the outer packaging, the damaged area, and the shipping label\n- The order number and the item serial number wher"
+        },
+        {
+          "rank": 3,
+          "chunk_id": 26,
+          "policy_id": "DMG-003",
+          "source": "damaged_product_policy.txt",
+          "chunk_index": 3,
+          "bm25_score": 2.721,
+          "vector_score": 0.4654,
+          "rrf_score": 0.030777,
+          "retriever_ranks": {
+            "dense": 6,
+            "sparse": 4
+          },
+          "content_preview": "[Damaged Product Policy (DMG-003) > 6. Repeat claims]\n## 6. Repeat claims\nAccounts filing more than four damage claims in a rolling 90-day period are flagged for manual review under rule DMG-RVW-04. Review does not block the current claim; it applies"
+        },
+        {
+          "rank": 4,
+          "chunk_id": 36,
+          "policy_id": "MAN-006",
+          "source": "product_manual_example.txt",
+          "chunk_index": 1,
+          "bm25_score": 3.1594,
+          "vector_score": 0.4313,
+          "rrf_score": 0.030214,
+          "retriever_ranks": {
+            "dense": 11,
+            "sparse": 2
+          },
+          "content_preview": "[Product Manual: AuraBrew X200 Espresso Machine (MAN-006) > 3. Error codes]\n## 3. Error codes\n| Code | Meaning | Fix |\n| --- | --- | --- |\n| E01 | Water tank empty or not seated | Refill and reseat the tank until it clicks |\n| E02 | Boiler temperatur"
+        },
+        {
+          "rank": 5,
+          "chunk_id": 28,
+          "policy_id": "DEL-004",
+          "source": "delivery_policy.txt",
+          "chunk_index": 1,
+          "bm25_score": 1.613,
+          "vector_score": 0.5017,
+          "rrf_score": 0.029958,
+          "retriever_ranks": {
+            "dense": 3,
+            "sparse": 11
+          },
+          "content_preview": "[Delivery Policy (DEL-004) > 2. Tracking]\n## 2. Tracking\nA tracking number is issued when the parcel leaves the warehouse. Tracking events can lag the physical parcel by up to 12 hours. A parcel showing no scan for 3 consecutive business days is trea"
+        }
+      ],
+      "dropped_by_deduplication": []
+    },
+    {
+      "case_id": "GC-009",
+      "question": "Can I get a mortgage or a personal loan through your store?",
+      "category": "out_of_scope",
+      "difficulty": "easy",
+      "should_abstain": true,
+      "expected_sources": [],
+      "expected_policy_ids": [],
+      "retrieved_sources": [
+        "payment_failure_faq.txt",
+        "delivery_policy.txt",
+        "refund_policy.txt",
+        "refund_policy.txt",
+        "delivery_policy.txt",
+        "refund_policy.txt",
+        "return_policy.txt",
+        "damaged_product_policy.txt",
+        "payment_failure_faq.txt",
+        "damaged_product_policy.txt",
+        "refund_policy.txt",
+        "delivery_policy.txt",
+        "payment_failure_faq.txt",
+        "damaged_product_policy.txt",
+        "damaged_product_policy.txt",
+        "return_policy.txt",
+        "delivery_policy.txt",
+        "return_policy.txt",
+        "product_manual_example.txt",
+        "product_manual_example.txt"
+      ],
+      "retrieved_policy_ids": [
+        "PAY-005",
+        "DEL-004",
+        "REF-001",
+        "REF-001",
+        "DEL-004",
+        "REF-001",
+        "RET-002",
+        "DMG-003",
+        "PAY-005",
+        "DMG-003",
+        "REF-001",
+        "DEL-004",
+        "PAY-005",
+        "DMG-003",
+        "DMG-003",
+        "RET-002",
+        "DEL-004",
+        "RET-002",
+        "MAN-006",
+        "MAN-006"
+      ],
+      "metrics": {},
+      "first_relevant_rank": null,
+      "expected_keywords": [],
+      "missing_keywords": [],
+      "keyword_recall": 0.0,
+      "failed": false,
+      "failure_reasons": [],
+      "top_results": [
+        {
+          "rank": 1,
+          "chunk_id": 33,
+          "policy_id": "PAY-005",
+          "source": "payment_failure_faq.txt",
+          "chunk_index": 2,
+          "bm25_score": 2.4263,
+          "vector_score": 0.4438,
+          "rrf_score": 0.031754,
+          "retriever_ranks": {
+            "dense": 2,
+            "sparse": 4
+          },
+          "content_preview": "[Payment Failure FAQ (PAY-005) > 3. Pending charges that are not orders]\n## 3. Pending charges that are not orders\nA declined attempt can still leave a pending authorisation on the customer's statement. Authorisations are released automatically by th"
+        },
+        {
+          "rank": 2,
+          "chunk_id": 30,
+          "policy_id": "DEL-004",
+          "source": "delivery_policy.txt",
+          "chunk_index": 3,
+          "bm25_score": 5.9404,
+          "vector_score": 0.41,
+          "rrf_score": 0.031545,
+          "retriever_ranks": {
+            "dense": 6,
+            "sparse": 1
+          },
+          "content_preview": "[Delivery Policy (DEL-004) > 6. Address changes]\n## 6. Address changes\nDelivery addresses can be edited until the order reaches status \"picking\". After that point the address is locked, and the parcel must be redirected through the carrier's own port"
+        },
+        {
+          "rank": 3,
+          "chunk_id": 40,
+          "policy_id": "REF-001",
+          "source": "refund_policy.txt",
+          "chunk_index": 2,
+          "bm25_score": 2.9097,
+          "vector_score": 0.4174,
+          "rrf_score": 0.031514,
+          "retriever_ranks": {
+            "dense": 5,
+            "sparse": 2
+          },
+          "content_preview": "[Refund Policy (REF-001) > 3. Partial refunds]\n## 3. Partial refunds\nA partial refund is issued when an order contains multiple items and only some are returned. Shipping charges are refunded in full only when the entire order is returned, or when th"
+        },
+        {
+          "rank": 4,
+          "chunk_id": 39,
+          "policy_id": "REF-001",
+          "source": "refund_policy.txt",
+          "chunk_index": 1,
+          "bm25_score": 2.4643,
+          "vector_score": 0.3788,
+          "rrf_score": 0.029387,
+          "retriever_ranks": {
+            "dense": 14,
+            "sparse": 3
+          },
+          "content_preview": "[Refund Policy (REF-001) > 2. Refund processing times]\n## 2. Refund processing times\nOnce a refund is approved, funds are released to the original payment method on the following schedule:\n\n- Credit and debit cards: 5 to 7 business days\n- PayPal: 3 t"
+        },
+        {
+          "rank": 5,
+          "chunk_id": 28,
+          "policy_id": "DEL-004",
+          "source": "delivery_policy.txt",
+          "chunk_index": 1,
+          "bm25_score": 1.8274,
+          "vector_score": 0.3769,
+          "rrf_score": 0.028718,
+          "retriever_ranks": {
+            "dense": 15,
+            "sparse": 5
+          },
+          "content_preview": "[Delivery Policy (DEL-004) > 2. Tracking]\n## 2. Tracking\nA tracking number is issued when the parcel leaves the warehouse. Tracking events can lag the physical parcel by up to 12 hours. A parcel showing no scan for 3 consecutive business days is trea"
+        }
+      ],
+      "dropped_by_deduplication": []
+    },
+    {
+      "case_id": "GC-010",
+      "question": "The espresso machine arrived cracked. Do I have to pay to send it back?",
+      "category": "damaged",
+      "difficulty": "hard",
+      "should_abstain": false,
+      "expected_sources": [
+        "damaged_product_policy.txt"
+      ],
+      "expected_policy_ids": [
+        "DMG-003"
+      ],
+      "retrieved_sources": [
+        "product_manual_example.txt",
+        "product_manual_example.txt",
+        "product_manual_example.txt",
+        "damaged_product_policy.txt",
+        "damaged_product_policy.txt",
+        "payment_failure_faq.txt",
+        "payment_failure_faq.txt",
+        "payment_failure_faq.txt",
+        "refund_policy.txt",
+        "return_policy.txt",
+        "payment_failure_faq.txt",
+        "return_policy.txt",
+        "refund_policy.txt",
+        "refund_policy.txt",
+        "refund_policy.txt",
+        "damaged_product_policy.txt",
+        "delivery_policy.txt",
+        "return_policy.txt",
+        "delivery_policy.txt",
+        "delivery_policy.txt"
+      ],
+      "retrieved_policy_ids": [
+        "MAN-006",
+        "MAN-006",
+        "MAN-006",
+        "DMG-003",
+        "DMG-003",
+        "PAY-005",
+        "PAY-005",
+        "PAY-005",
+        "REF-001",
+        "RET-002",
+        "PAY-005",
+        "RET-002",
+        "REF-001",
+        "REF-001",
+        "REF-001",
+        "DMG-003",
+        "DEL-004",
+        "RET-002",
+        "DEL-004",
+        "DEL-004"
+      ],
+      "metrics": {
+        "hit_rate_at_1": 0.0,
+        "hit_rate_at_3": 0.0,
+        "hit_rate_at_5": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "mrr_at_5": 0.25
+      },
+      "first_relevant_rank": 4,
+      "expected_keywords": [
+        "never asked to pay return shipping",
+        "48 hours"
+      ],
+      "missing_keywords": [],
+      "keyword_recall": 1.0,
+      "failed": false,
+      "failure_reasons": [],
+      "top_results": [
+        {
+          "rank": 1,
+          "chunk_id": 36,
+          "policy_id": "MAN-006",
+          "source": "product_manual_example.txt",
+          "chunk_index": 1,
+          "bm25_score": 4.6335,
+          "vector_score": 0.5635,
+          "rrf_score": 0.032266,
+          "retriever_ranks": {
+            "dense": 3,
+            "sparse": 1
+          },
+          "content_preview": "[Product Manual: AuraBrew X200 Espresso Machine (MAN-006) > 3. Error codes]\n## 3. Error codes\n| Code | Meaning | Fix |\n| --- | --- | --- |\n| E01 | Water tank empty or not seated | Refill and reseat the tank until it clicks |\n| E02 | Boiler temperatur"
+        },
+        {
+          "rank": 2,
+          "chunk_id": 35,
+          "policy_id": "MAN-006",
+          "source": "product_manual_example.txt",
+          "chunk_index": 0,
+          "bm25_score": 4.4397,
+          "vector_score": 0.5331,
+          "rrf_score": 0.031054,
+          "retriever_ranks": {
+            "dense": 7,
+            "sparse": 2
+          },
+          "content_preview": "[Product Manual: AuraBrew X200 Espresso Machine (MAN-006) > 1. In the box]\n# Product Manual: AuraBrew X200 Espresso Machine (MAN-006)\nDocument ID: MAN-006\nModel number: AB-X200-EU\nFirmware: 2.6.1\nWarranty: 24 months\n\n## 1. In the box\n- AuraBrew X200 "
+        },
+        {
+          "rank": 3,
+          "chunk_id": 37,
+          "policy_id": "MAN-006",
+          "source": "product_manual_example.txt",
+          "chunk_index": 2,
+          "bm25_score": 3.3648,
+          "vector_score": 0.5535,
+          "rrf_score": 0.030777,
+          "retriever_ranks": {
+            "dense": 6,
+            "sparse": 4
+          },
+          "content_preview": "[Product Manual: AuraBrew X200 Espresso Machine (MAN-006) > 5. Descaling]\n## 5. Descaling\nDescale every 3 months, or when E04 appears. Use one cleaning tablet in a full tank, then hold the two-cup button for 5 seconds to start the cycle. The cycle ta"
+        },
+        {
+          "rank": 4,
+          "chunk_id": 25,
+          "policy_id": "DMG-003",
+          "source": "damaged_product_policy.txt",
+          "chunk_index": 2,
+          "bm25_score": 2.5204,
+          "vector_score": 0.5597,
+          "rrf_score": 0.030536,
+          "retriever_ranks": {
+            "dense": 5,
+            "sparse": 6
+          },
+          "content_preview": "[Damaged Product Policy (DMG-003) > 4. Items that must not be returned]\n## 4. Items that must not be returned\nFor hygiene and safety reasons, damaged items in the following categories are refunded or replaced without a physical return. The customer i"
+        },
+        {
+          "rank": 5,
+          "chunk_id": 24,
+          "policy_id": "DMG-003",
+          "source": "damaged_product_policy.txt",
+          "chunk_index": 1,
+          "bm25_score": 1.065,
+          "vector_score": 0.5267,
+          "rrf_score": 0.029199,
+          "retriever_ranks": {
+            "dense": 8,
+            "sparse": 9
+          },
+          "content_preview": "[Damaged Product Policy (DMG-003) > 2. Evidence required]\n## 2. Evidence required\nA damage claim requires:\n\n- At least three photographs: the outer packaging, the damaged area, and the shipping label\n- The order number and the item serial number wher"
+        }
+      ],
+      "dropped_by_deduplication": []
+    }
+  ]
+}

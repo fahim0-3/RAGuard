@@ -139,7 +139,7 @@ def count_chunks() -> int:
 def fetch_all_chunks() -> list[RetrievedChunk]:
     """Load the whole corpus. Used to build the in-memory BM25 index."""
     sql = f"""
-        SELECT id, content, source, chunk_index, metadata
+        SELECT id, content, source, doc_id, chunk_index, metadata
         FROM {CHUNKS_TABLE}
         ORDER BY source, chunk_index
     """
@@ -150,6 +150,7 @@ def fetch_all_chunks() -> list[RetrievedChunk]:
             chunk_id=row["id"],
             content=row["content"],
             source=row["source"],
+            doc_id=row["doc_id"] or "",
             chunk_index=row["chunk_index"],
             metadata=row["metadata"] or {},
         )
@@ -157,12 +158,20 @@ def fetch_all_chunks() -> list[RetrievedChunk]:
     ]
 
 
+def source_policy_ids() -> dict[str, str]:
+    """Map each source filename to its document identifier, for example REF-001."""
+    sql = f"SELECT DISTINCT source, doc_id FROM {CHUNKS_TABLE} ORDER BY source"
+    with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        rows = cur.execute(sql).fetchall()
+    return {row["source"]: row["doc_id"] or "" for row in rows}
+
+
 def dense_search(query_embedding: Sequence[float], top_k: int) -> list[RetrievedChunk]:
     """Cosine nearest neighbours. Returns similarity in [0, 1] as `dense_score`."""
     import numpy as np
 
     sql = f"""
-        SELECT id, content, source, chunk_index, metadata,
+        SELECT id, content, source, doc_id, chunk_index, metadata,
                1 - (embedding <=> %s) AS similarity
         FROM {CHUNKS_TABLE}
         ORDER BY embedding <=> %s
@@ -176,6 +185,7 @@ def dense_search(query_embedding: Sequence[float], top_k: int) -> list[Retrieved
             chunk_id=row["id"],
             content=row["content"],
             source=row["source"],
+            doc_id=row["doc_id"] or "",
             chunk_index=row["chunk_index"],
             metadata=row["metadata"] or {},
             dense_score=float(row["similarity"]),

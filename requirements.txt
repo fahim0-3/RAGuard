@@ -1,20 +1,25 @@
 # ---------------------------------------------------------------------------
 # RAGuard dependencies
-# Tested against Python 3.11 / 3.12. See README "Python version" note before
-# using 3.13+ (PyTorch wheel availability lags new CPython releases).
+# Tested against Python 3.11 / 3.12. Version floors follow the project
+# specification, with three deliberate deviations documented below.
 # ---------------------------------------------------------------------------
 
 # --- Configuration ---
-pydantic>=2.7
+pydantic>=2.0.0
 pydantic-settings>=2.3
-python-dotenv>=1.0
+python-dotenv>=1.0.0
 
 # --- Orchestration (LCEL) ---
-langchain>=0.3
-langchain-core>=0.3
-langchain-community>=0.3
-langchain-text-splitters>=0.3
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-community>=0.3.0
+langchain-text-splitters>=0.3.0
 langchain-google-genai>=2.0
+
+# DEVIATION 1: langchain-postgres is not used. It wraps pgvector behind
+# LangChain's VectorStore interface, which hides the SQL needed for hybrid
+# retrieval (the BM25 half must read the same rows) and for the HNSW index
+# configuration. src/retrieval/vector_store.py owns that SQL directly.
 
 # --- LLM providers (swappable via LLM_PROVIDER) ---
 google-genai>=1.0
@@ -22,29 +27,37 @@ google-genai>=1.0
 # langchain-ollama>=0.2
 
 # --- Embeddings and reranking ---
-sentence-transformers>=3.0
-torch>=2.2
-transformers>=4.41
+sentence-transformers>=2.7.0
+torch>=2.0.0
+transformers>=4.40.0
 
 # --- Lexical retrieval ---
+# DEVIATION 2: the specification lists rank_bm25>=2.0.0, which does not exist.
+# The package's latest release is 0.2.2, so that floor would fail to resolve.
 rank-bm25>=0.2.2
 
 # --- Vector store ---
+# DEVIATION 3: psycopg 3 replaces psycopg2-binary. psycopg2 has no native
+# support for the pgvector adapter used here, no connection pool suitable for
+# FastAPI, and is in maintenance mode. Installing both would ship an unused
+# second driver.
 psycopg[binary]>=3.1
 psycopg-pool>=3.2
-pgvector>=0.3
+pgvector>=0.2.0
 
 # --- Service layer ---
-fastapi>=0.111
-uvicorn[standard]>=0.30
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
 httpx>=0.27
 
 # --- Frontend ---
-streamlit>=1.36
+streamlit>=1.32.0
 
 # --- Evaluation ---
-pytest>=8.2
+pytest>=8.0.0
 pytest-asyncio>=0.23
+# Ragas 0.2 renamed the evaluation API (EvaluationDataset, ResponseRelevancy).
+# src/evaluation/metrics.py targets that API, so 0.1.x will not work.
 ragas>=0.2
 datasets>=2.20
 

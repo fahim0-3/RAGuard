@@ -1,5 +1,12 @@
 {
   "_comment": "Regression gate for the deterministic CI tier. Update deliberately, in its own commit, with the evaluation report that justifies the new numbers. Raising a threshold to make a red build green is the exact failure mode this project exists to prevent.",
+  "_semantics": "Every number in this file is a TARGET THRESHOLD chosen by a human, not a measurement. Measured values are never written here automatically.",
+  "_measured_values": "reports/retrieval_baseline.json holds the measured Phase B retrieval baseline. Compare against it before changing any threshold below.",
+  "_unvalidated_sections": [
+    "end_to_end",
+    "ragas"
+  ],
+  "_unvalidated_note": "The end_to_end and ragas thresholds have never been measured; no LLM tier has run. Treat them as placeholders until a measured report exists.",
   "updated": "2026-08-15",
   "prompt_version": "2026-08-15_prompts_v1",
   "dataset_version": "2026-08-15_golden_v1",

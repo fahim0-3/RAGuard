@@ -1,5 +1,5 @@
-# Delivery Policy
-Document ID: POL-DEL-2025
+# Delivery Policy (DEL-004)
+Document ID: DEL-004
 Version: 4.1
 Effective date: 2025-03-01
 Owner: Fulfilment Operations

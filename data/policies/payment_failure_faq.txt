@@ -1,5 +1,5 @@
-# Payment Failure FAQ
-Document ID: FAQ-PAY-2025
+# Payment Failure FAQ (PAY-005)
+Document ID: PAY-005
 Version: 2.0
 Effective date: 2025-02-20
 Owner: Payments Engineering

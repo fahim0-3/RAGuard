@@ -1,5 +1,5 @@
-# Product Manual: AuraBrew X200 Espresso Machine
-Document ID: MAN-AB-X200
+# Product Manual: AuraBrew X200 Espresso Machine (MAN-006)
+Document ID: MAN-006
 Model number: AB-X200-EU
 Firmware: 2.6.1
 Warranty: 24 months

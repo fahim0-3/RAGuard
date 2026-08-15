@@ -48,12 +48,25 @@ class Settings(BaseSettings):
     chunk_size: int = 800
     chunk_overlap: int = 120
 
+    # --- Evaluation ---
+    # Configurable so a larger dataset can be evaluated without a code change.
+    golden_dataset_path: Path = Path("src/evaluation/golden_dataset.json")
+
     # --- Retrieval ---
     dense_top_k: int = 20
     sparse_top_k: int = 20
     fusion_top_k: int = 20
     rerank_top_k: int = 5
     rrf_k: int = 60
+
+    # --- Deduplication ---
+    dedup_enabled: bool = True
+    dedup_near_duplicate_threshold: float = Field(default=0.90, ge=0.0, le=1.0)
+    dedup_adjacent_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
+    # Maximum consecutive chunks from one source. Set to 0 to disable the cap.
+    # Measured: a cap of 3 removed distinct sections without improving any
+    # metric on the current corpus, where documents are 3 to 4 chunks long.
+    dedup_max_adjacent_run: int = Field(default=5, ge=0)
 
     # --- Self-healing ---
     retrieval_confidence_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
@@ -70,6 +83,11 @@ class Settings(BaseSettings):
     @property
     def absolute_data_dir(self) -> Path:
         path = self.data_dir
+        return path if path.is_absolute() else PROJECT_ROOT / path
+
+    @property
+    def absolute_golden_dataset_path(self) -> Path:
+        path = self.golden_dataset_path
         return path if path.is_absolute() else PROJECT_ROOT / path
 
     @property

@@ -1,84 +1,137 @@
-"""Hybrid retrieval: dense + BM25, fused with Reciprocal Rank Fusion.
+"""Hybrid retrieval: BM25 + pgvector, fused with RRF, then deduplicated.
 
-RRF is used rather than a weighted score blend because dense cosine similarity
-and BM25 scores live on incomparable scales. RRF only consumes ranks, so it
-needs no per-corpus normalisation constant to tune, which keeps evaluation
-runs comparable across ingestion changes.
+Pipeline for a single query:
 
-    score(d) = sum over retrievers of 1 / (k + rank(d))
+    BM25 top-20  ─┐
+                  ├─ RRF (k=60) ─ deduplicate ─ final top-20
+    dense top-20 ─┘
+
+Fusion runs over the *full* union rather than a pre-truncated list, so that
+deduplication removes candidates from the tail rather than leaving holes in the
+returned top-20.
+
+Reranking is deliberately not part of this module. Retrieval quality must be
+measurable on its own, without loading a 568 M parameter cross-encoder, so that
+the retrieval baseline is reproducible on modest hardware and in CI.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import replace
+from dataclasses import dataclass, field
+from typing import Any
 
 from src.config import get_settings
 from src.retrieval.bm25 import get_bm25_index
+from src.retrieval.deduplication import DeduplicationResult, deduplicate, deduplication_config
 from src.retrieval.embeddings import embed_query
+from src.retrieval.rrf import reciprocal_rank_fusion, rrf_config
 from src.retrieval.types import RetrievedChunk
 from src.retrieval.vector_store import dense_search
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "HybridRetriever",
+    "RetrievalDiagnostics",
+    "get_hybrid_retriever",
+    "reciprocal_rank_fusion",
+]
 
-def reciprocal_rank_fusion(
-    rankings: list[list[RetrievedChunk]],
-    k: int = 60,
-    top_k: int | None = None,
-) -> list[RetrievedChunk]:
-    """Fuse several ranked lists into one. Later duplicates merge their scores."""
-    fused: dict[int, RetrievedChunk] = {}
-    scores: dict[int, float] = {}
 
-    for ranking in rankings:
-        for rank, chunk in enumerate(ranking, start=1):
-            scores[chunk.chunk_id] = scores.get(chunk.chunk_id, 0.0) + 1.0 / (k + rank)
-            existing = fused.get(chunk.chunk_id)
-            if existing is None:
-                fused[chunk.chunk_id] = replace(chunk)
-            else:
-                # Keep whichever stage-score each retriever contributed.
-                if chunk.dense_score is not None:
-                    existing.dense_score = chunk.dense_score
-                if chunk.sparse_score is not None:
-                    existing.sparse_score = chunk.sparse_score
+@dataclass(slots=True)
+class RetrievalDiagnostics:
+    """Per-stage record of one retrieval, for reports and failure analysis."""
 
-    for chunk_id, score in scores.items():
-        fused[chunk_id].fusion_score = score
+    query: str
+    dense_hits: list[RetrievedChunk] = field(default_factory=list)
+    sparse_hits: list[RetrievedChunk] = field(default_factory=list)
+    fused: list[RetrievedChunk] = field(default_factory=list)
+    deduplication: DeduplicationResult | None = None
+    results: list[RetrievedChunk] = field(default_factory=list)
 
-    ordered = sorted(fused.values(), key=lambda c: c.fusion_score or 0.0, reverse=True)
-    return ordered[:top_k] if top_k else ordered
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "query": self.query,
+            "dense_hit_count": len(self.dense_hits),
+            "sparse_hit_count": len(self.sparse_hits),
+            "fused_count": len(self.fused),
+            "dropped_by_deduplication": (
+                [d.to_dict() for d in self.deduplication.dropped] if self.deduplication else []
+            ),
+            "result_count": len(self.results),
+        }
 
 
 class HybridRetriever:
-    """Dense + sparse retrieval with RRF fusion. Reranking is a separate stage."""
+    """BM25 + dense retrieval, RRF fusion, deduplication."""
 
     def __init__(
         self,
         dense_top_k: int | None = None,
         sparse_top_k: int | None = None,
-        fusion_top_k: int | None = None,
+        final_top_k: int | None = None,
         rrf_k: int | None = None,
     ) -> None:
         settings = get_settings()
         self.dense_top_k = dense_top_k or settings.dense_top_k
         self.sparse_top_k = sparse_top_k or settings.sparse_top_k
-        self.fusion_top_k = fusion_top_k or settings.fusion_top_k
+        self.final_top_k = final_top_k or settings.fusion_top_k
         self.rrf_k = rrf_k or settings.rrf_k
+        self.dedup_enabled = settings.dedup_enabled
+        self.near_duplicate_threshold = settings.dedup_near_duplicate_threshold
+        self.adjacent_threshold = settings.dedup_adjacent_threshold
+        # A configured 0 means "no cap"; deduplicate() expects None for that.
+        self.max_adjacent_run = settings.dedup_max_adjacent_run or None
 
-    def retrieve(self, query: str, top_k: int | None = None) -> list[RetrievedChunk]:
+    # -- stages ------------------------------------------------------------
+
+    def _dedupe(self, chunks: list[RetrievedChunk]) -> DeduplicationResult:
+        if not self.dedup_enabled:
+            return DeduplicationResult(kept=list(chunks), dropped=[])
+        return deduplicate(
+            chunks,
+            near_duplicate_threshold=self.near_duplicate_threshold,
+            adjacent_threshold=self.adjacent_threshold,
+            max_adjacent_run=self.max_adjacent_run,
+        )
+
+    # -- public API --------------------------------------------------------
+
+    def retrieve_with_diagnostics(
+        self, query: str, top_k: int | None = None
+    ) -> RetrievalDiagnostics:
+        """Retrieve and return every intermediate stage."""
         dense_hits = dense_search(embed_query(query), self.dense_top_k)
         sparse_hits = get_bm25_index().search(query, self.sparse_top_k)
+
+        fused = reciprocal_rank_fusion(
+            {"dense": dense_hits, "sparse": sparse_hits}, k=self.rrf_k
+        )
+        dedup = self._dedupe(fused)
+        results = dedup.kept[: top_k or self.final_top_k]
+
         logger.debug(
-            "query=%r dense=%d sparse=%d", query, len(dense_hits), len(sparse_hits)
+            "query=%r dense=%d sparse=%d fused=%d dropped=%d final=%d",
+            query,
+            len(dense_hits),
+            len(sparse_hits),
+            len(fused),
+            dedup.dropped_count,
+            len(results),
         )
-        return reciprocal_rank_fusion(
-            [dense_hits, sparse_hits],
-            k=self.rrf_k,
-            top_k=top_k or self.fusion_top_k,
+        return RetrievalDiagnostics(
+            query=query,
+            dense_hits=dense_hits,
+            sparse_hits=sparse_hits,
+            fused=fused,
+            deduplication=dedup,
+            results=results,
         )
+
+    def retrieve(self, query: str, top_k: int | None = None) -> list[RetrievedChunk]:
+        return self.retrieve_with_diagnostics(query, top_k=top_k).results
 
     def retrieve_many(
         self, queries: list[str], top_k: int | None = None
@@ -88,10 +141,41 @@ class HybridRetriever:
         Used by the self-healing loop after query rewriting: each variant is an
         independent retriever, so RRF composes over them without change.
         """
-        rankings = [self.retrieve(q, top_k=self.fusion_top_k) for q in queries]
-        return reciprocal_rank_fusion(
-            rankings, k=self.rrf_k, top_k=top_k or self.fusion_top_k
-        )
+        rankings = {f"query_{i}": self.retrieve(q) for i, q in enumerate(queries)}
+        fused = reciprocal_rank_fusion(rankings, k=self.rrf_k)
+        return self._dedupe(fused).kept[: top_k or self.final_top_k]
+
+    def config(self) -> dict[str, Any]:
+        """Full configuration block recorded in evaluation reports."""
+        settings = get_settings()
+        return {
+            "retrieval": {
+                "strategy": "hybrid_bm25_dense_rrf",
+                "dense_top_k": self.dense_top_k,
+                "sparse_top_k": self.sparse_top_k,
+                "final_top_k": self.final_top_k,
+                "reranking_applied": False,
+            },
+            "bm25": get_bm25_index().config(),
+            "vector": {
+                "embedding_model": settings.embedding_model,
+                "dimension": settings.vector_dimension,
+                "metric": "cosine",
+                "operator": "<=>",
+                "index": "hnsw (vector_cosine_ops)",
+                "normalised_embeddings": True,
+                "top_k": self.dense_top_k,
+            },
+            "rrf": rrf_config(self.rrf_k),
+            "deduplication": {
+                "enabled": self.dedup_enabled,
+                **deduplication_config(
+                    near_duplicate_threshold=self.near_duplicate_threshold,
+                    adjacent_threshold=self.adjacent_threshold,
+                    max_adjacent_run=self.max_adjacent_run,
+                ),
+            },
+        }
 
 
 _retriever: HybridRetriever | None = None
@@ -105,3 +189,10 @@ def get_hybrid_retriever() -> HybridRetriever:
             if _retriever is None:
                 _retriever = HybridRetriever()
     return _retriever
+
+
+def reset_hybrid_retriever() -> None:
+    """Drop the cached retriever so new settings take effect."""
+    global _retriever
+    with _lock:
+        _retriever = None
