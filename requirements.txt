@@ -16,6 +16,11 @@ langchain-community>=0.3.0
 langchain-text-splitters>=0.3.0
 langchain-google-genai>=2.0
 
+# --- Self-healing workflow (Phase F) ---
+# The retry loop is a real cyclic graph, not a while-loop: the routing rules
+# and the retry bound are declared as edges and inspected by tests.
+langgraph>=1.0
+
 # DEVIATION 1: langchain-postgres is not used. It wraps pgvector behind
 # LangChain's VectorStore interface, which hides the SQL needed for hybrid
 # retrieval (the BM25 half must read the same rows) and for the HNSW index

@@ -35,8 +35,13 @@ class Settings(BaseSettings):
     gemini_judge_model: str = "gemini-2.5-flash-lite"
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b"
-    llm_temperature: float = 0.0
+    # Provider-agnostic model override. Empty means "use the provider default",
+    # so switching provider does not require editing a model ID.
+    llm_model: str = ""
+    llm_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     llm_max_output_tokens: int = 1024
+    llm_request_timeout_s: int = Field(default=60, ge=1)
+    llm_max_retries: int = Field(default=2, ge=0, le=5)
 
     # --- Local models ---
     embedding_model: str = "BAAI/bge-m3"
@@ -78,12 +83,23 @@ class Settings(BaseSettings):
     # metric on the current corpus, where documents are 3 to 4 chunks long.
     dedup_max_adjacent_run: int = Field(default=5, ge=0)
 
-    # --- Self-healing ---
+    # --- Self-healing (legacy imperative pipeline) ---
     retrieval_confidence_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
     abstain_threshold: float = Field(default=0.30, ge=0.0, le=1.0)
     max_healing_attempts: int = Field(default=2, ge=0, le=5)
     query_rewrite_variants: int = Field(default=3, ge=1, le=6)
     citation_support_threshold: float = Field(default=0.25, ge=0.0, le=1.0)
+
+    # --- Self-healing graph (Phase F) ---
+    # Specification defaults. These gate the evidence decision together with
+    # the structured grader; neither signal decides alone.
+    evidence_top_score_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
+    evidence_min_relevant_chunks: int = Field(default=2, ge=1)
+    evidence_confidence_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
+    graph_max_retries: int = Field(default=2, ge=0, le=5)
+    # One regeneration after a failed citation check, then abstain.
+    graph_max_regenerations: int = Field(default=1, ge=0, le=3)
+    graph_use_llm: bool = True
 
     # --- Service ---
     api_host: str = "0.0.0.0"

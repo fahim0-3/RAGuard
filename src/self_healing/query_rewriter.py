@@ -132,3 +132,86 @@ def rewrite_query(
         if isinstance(q, str) and q.strip() and q.strip().lower() != question.lower()
     ]
     return list(dict.fromkeys(cleaned))[:n_variants] or fallback
+
+
+# --------------------------------------------------------------------------
+# Phase F: single-variant rewriting with identifier preservation
+# --------------------------------------------------------------------------
+
+#: Tokens that must survive a rewrite byte-for-byte. Losing "PAY-402" or
+#: "AB-X200-EU" turns a precise lookup into a topic search, which is the
+#: opposite of what a retry is for.
+_ORDER_ID_PATTERN = re.compile(r"\b(?:ORD|ORDER|INV|#)[-_ ]?\d{4,}\b", re.IGNORECASE)
+_QUOTED_PATTERN = re.compile(r"[\"“”']([^\"“”']{2,80})[\"“”']")
+_PRODUCT_PATTERN = re.compile(
+    r"\b(?:AuraBrew\s*\w*|AB-X200-EU|X200)\b", re.IGNORECASE
+)
+
+
+#: Case-insensitive twin of `_IDENTIFIER_PATTERN`, matched against the original
+#: text so the customer's own casing is what gets preserved.
+_IDENTIFIER_ANYCASE = re.compile(_IDENTIFIER_PATTERN.pattern, re.IGNORECASE)
+
+
+def protected_terms(text: str) -> list[str]:
+    """Every substring a rewrite must preserve exactly, in its original casing."""
+    terms: list[str] = []
+    terms.extend(m.group(0) for m in _IDENTIFIER_ANYCASE.finditer(text))
+    terms.extend(m.group(0) for m in _ORDER_ID_PATTERN.finditer(text))
+    terms.extend(m.group(0) for m in _PRODUCT_PATTERN.finditer(text))
+    terms.extend(m.group(1) for m in _QUOTED_PATTERN.finditer(text))
+    return list(dict.fromkeys(t for t in terms if t.strip()))
+
+
+def _restore_protected(original: str, rewritten: str) -> str:
+    """Restore every protected term the rewrite dropped or re-cased.
+
+    Heuristic rewriting lowercases, and a model may paraphrase a code away
+    entirely. Both are repaired: a term present in the wrong case is put back
+    in its original case, and a term that vanished is appended. Appending
+    rather than splicing, because surgical substitution into model-written
+    prose is a good way to produce a sentence that means something else.
+    """
+    result = rewritten
+    # Longest first, so "AuraBrew X200" is restored before the "X200" inside it.
+    for term in sorted(protected_terms(original), key=len, reverse=True):
+        pattern = re.compile(re.escape(term), re.IGNORECASE)
+        if pattern.search(result):
+            # A lambda replacement, so backslashes in the term are literal.
+            result = pattern.sub(lambda _match, t=term: t, result)
+        else:
+            result = f"{result} {term}"
+    return result.strip()
+
+
+def rewrite_once(
+    question: str,
+    missing_information: list[str] | None = None,
+    weak_chunks: list[RetrievedChunk] | None = None,
+    use_llm: bool = True,
+) -> str:
+    """Return exactly one rewritten query for a single retry.
+
+    The graph consumes one rewrite per attempt, so the retry count and the
+    rewrite history stay in step. Falls back to the deterministic heuristics
+    when no provider is reachable, which keeps the retry path testable offline.
+    """
+    hint = ""
+    if missing_information:
+        # The grader already said what was absent; feeding that back is the
+        # difference between a rephrase and a targeted second attempt.
+        hint = " ".join(missing_information[:2])
+
+    seeded = f"{question} {hint}".strip() if hint else question
+
+    variants = rewrite_query(
+        seeded, weak_chunks=weak_chunks, n_variants=1, use_llm=use_llm
+    )
+    candidate = variants[0] if variants else heuristic_first(question)
+    return _restore_protected(question, candidate)
+
+
+def heuristic_first(question: str) -> str:
+    """Best deterministic single rewrite, or the original if nothing applies."""
+    variants = heuristic_rewrites(question, 1)
+    return variants[0] if variants else question
