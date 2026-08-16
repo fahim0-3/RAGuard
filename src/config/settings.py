@@ -101,6 +101,11 @@ class Settings(BaseSettings):
     graph_max_regenerations: int = Field(default=1, ge=0, le=3)
     graph_use_llm: bool = True
 
+    # --- Citation verification (Phase G) ---
+    # "entailment" adds semantic checking; "deterministic" keeps the Phase F
+    # lexical verifier, which needs no provider.
+    verifier_backend: Literal["entailment", "deterministic"] = "entailment"
+
     # --- Service ---
     api_host: str = "0.0.0.0"
     api_port: int = 8000

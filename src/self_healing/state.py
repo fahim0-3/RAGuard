@@ -114,9 +114,9 @@ class RiskAssessment(_Truncating):
 class VerificationResult(_Truncating):
     """Citation verification outcome.
 
-    Phase F fills this from the deterministic verifier already built in
-    `citation_verifier`. Phase G replaces the *producer* without changing this
-    contract or any edge in the graph.
+    Phase F filled this from the lexical verifier; Phase G adds semantic
+    entailment. The field set grew, but every Phase F field kept its name and
+    meaning, so the graph's routing and the `Verifier` protocol are unchanged.
     """
 
     supported: bool = False
@@ -127,7 +127,25 @@ class VerificationResult(_Truncating):
     support_ratio: float = 0.0
     reason: str = ""
 
-    @field_validator("support_ratio")
+    # --- Phase G ---
+    confidence: float = 0.0
+    #: What a claim needed but no cited passage contained, for example a number
+    #: or a policy ID that appears in the answer and nowhere in the evidence.
+    missing_evidence: list[str] = Field(default_factory=list)
+    #: Per-claim verdicts. Operational fields only; no model deliberation.
+    claims: list[dict[str, Any]] = Field(default_factory=list)
+    claim_count: int = 0
+    supported_claim_count: int = 0
+    unsupported_claim_count: int = 0
+    uncited_claim_count: int = 0
+    latency_ms: float = 0.0
+
+    @property
+    def verification_reason(self) -> str:
+        """Specification name for `reason`, which Phase F already established."""
+        return self.reason
+
+    @field_validator("support_ratio", "confidence")
     @classmethod
     def _clamp(cls, value: float) -> float:
         return max(0.0, min(1.0, float(value)))
@@ -136,6 +154,13 @@ class VerificationResult(_Truncating):
     @classmethod
     def _cap(cls, value: str) -> str:
         return cls._short(value)
+
+    @field_validator("missing_evidence", mode="before")
+    @classmethod
+    def _clean_missing(cls, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [" ".join(str(v).split())[:120] for v in value if str(v).strip()][:20]
 
 
 def _last(_existing: Any, incoming: Any) -> Any:
