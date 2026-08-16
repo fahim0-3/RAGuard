@@ -19,6 +19,11 @@ markers = [
     "integration: requires a running pgvector database and ingested corpus",
     "heavy: downloads or runs local transformer models",
     "llm: consumes LLM provider quota",
+    # `slow` implies integration and heavy, but is deliberately NOT marked
+    # `integration`, so that `-m \"integration and not llm\"` stays a usable gate.
+    # Reranking 20 candidates for every golden case is ~1000 cross-encoder
+    # forward passes; on CPU that is minutes, not seconds. Run with `-m slow`.
+    "slow: minutes-long; runs the real cross-encoder over the whole dataset",
 ]
 
 [tool.ruff]

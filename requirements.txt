@@ -63,3 +63,6 @@ datasets>=2.20
 
 # --- Tooling ---
 ruff>=0.5
+
+# Deterministic golden-dataset schema validation (Phase D).
+jsonschema>=4.20.0

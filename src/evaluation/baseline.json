@@ -1,21 +1,50 @@
 {
   "_comment": "Regression gate for the deterministic CI tier. Update deliberately, in its own commit, with the evaluation report that justifies the new numbers. Raising a threshold to make a red build green is the exact failure mode this project exists to prevent.",
   "_semantics": "Every number in this file is a TARGET THRESHOLD chosen by a human, not a measurement. Measured values are never written here automatically.",
-  "_measured_values": "reports/retrieval_baseline.json holds the measured Phase B retrieval baseline. Compare against it before changing any threshold below.",
+  "_measured_values": "reports/retrieval_baseline.json holds the measured Phase B retrieval baseline (10-case dataset v1). reports/golden_baseline.json holds the measured Phase D baseline (50-case dataset v2). Compare against them before changing any threshold below.",
+  "_retrieval_v2_provenance": "The retrieval_v2 targets are regression floors set deliberately below the first measured v2 run (2026-08-15, reports/golden_baseline.json), not copies of it. Measured: hit_rate_at_1 0.8182, hit_rate_at_3 0.8864, hit_rate_at_5 1.0, recall_at_5 0.9621, recall_at_10 1.0, mrr_at_5 0.8784, keyword_recall 1.0, citation_id_validity 1.0. A floor exists to catch a fall, so it sits below the measurement on purpose; it must never be moved down to accommodate one.",
+  "_latency_targets_ms": {
+    "_note": "Not ratios, so kept out of the scored sections. Retrieval only, model load excluded.",
+    "p50_ms": 1200,
+    "p95_ms": 2500
+  },
   "_unvalidated_sections": [
+    "reranked_v2",
     "end_to_end",
     "ragas"
   ],
-  "_unvalidated_note": "The end_to_end and ragas thresholds have never been measured; no LLM tier has run. Treat them as placeholders until a measured report exists.",
+  "_unvalidated_note": "The end_to_end and ragas thresholds have never been measured; no LLM tier has run. reranked_v2 is empty pending its first measured nightly run. Treat them as placeholders until a measured report exists. An empty section is not a passing gate: the test that reads it skips with instructions rather than reporting green.",
+  "_retired_gates": {
+    "retrieval.mean_top_confidence": {
+      "retired": "2026-08-16",
+      "former_threshold": 0.5,
+      "reason": "Wrong shape of gate, not merely a wrong number. It thresholded the MEAN of the top normalised reranker score, which cannot detect the failure it appeared to guard against. Before the Phase C double-sigmoid correction, sentence-transformers applied its own sigmoid inside predict() and the code applied a second one, collapsing every score to sigmoid(0.0007) = 0.5002. Discrimination was entirely gone, yet a 'mean >= 0.5' gate PASSED. A gate that a totally broken implementation satisfies is not a gate.",
+      "measured_after_correction": "Phase C, reports/reranking_comparison.json, 10-case v1 dataset: top-1 normalised scores 0.0001, 0.0106, 0.0118, 0.4670, 0.7530, 0.7551, 0.7558, 0.8129, 0.9738, 0.9824. Mean 0.5523. The corrected implementation discriminates across nearly the full range; the collapsed one did not.",
+      "why_not_re_thresholded": "It measures reranker score calibration, not retrieval quality, so it does not belong in a retrieval gate: swapping the reranker model moves it while retrieval is unchanged. It is also an absolute threshold on an uncalibrated logit-sigmoid. The deterministic Phase D gate no longer loads the reranker, so it cannot produce this number at all.",
+      "still_reported": "evaluate_retrieval() still computes mean_top_confidence and oos_mean_top_confidence for observability. They are recorded, not gated, and remain useful evidence for the Phase F threshold work."
+    }
+  },
   "updated": "2026-08-15",
   "prompt_version": "2026-08-15_prompts_v1",
-  "dataset_version": "2026-08-15_golden_v1",
+  "dataset_version": "2026-08-15_golden_v2",
+  "_dataset_version_note": "The retrieval section targets were set against dataset v1 (10 cases) and are retained for historical comparison. The retrieval_v2 section targets the current v2 dataset (50 cases). Aggregates from the two datasets are not comparable.",
   "tolerance": 0.02,
   "retrieval": {
     "hit_rate_at_5": 0.85,
     "mrr_at_5": 0.75,
-    "keyword_recall": 0.8,
-    "mean_top_confidence": 0.5
+    "keyword_recall": 0.8
+  },
+  "_reranked_v2_note": "Gate for the reranked retrieve-then-rerank path, read by the slow nightly test. Empty until a measured run exists. Populate only from a real run of that test's evaluator on dataset v2, with floors set below the measurement, exactly as retrieval_v2 was done. Do not copy retrieval_v2 here: those numbers were measured without the reranker and the reranked path returns 5 results rather than 20.",
+  "reranked_v2": {},
+  "retrieval_v2": {
+    "hit_rate_at_1": 0.78,
+    "hit_rate_at_3": 0.85,
+    "hit_rate_at_5": 0.95,
+    "recall_at_5": 0.92,
+    "recall_at_10": 0.95,
+    "mrr_at_5": 0.84,
+    "keyword_recall": 0.95,
+    "citation_id_validity": 1.0
   },
   "end_to_end": {
     "abstention_accuracy": 0.9,
