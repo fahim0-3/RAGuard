@@ -42,14 +42,21 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-      - name: Install minimal test dependencies
+      - name: Install fast-tier dependencies
         # Deliberately avoids torch: this job must stay under a minute so that
         # dataset-integrity and guard-logic failures are reported immediately.
+        # The list must cover everything the fast tier imports — it grew through
+        # Phases E to H (generation, graph, API, frontend), and an incomplete
+        # list fails at import, which looks like a code failure and is not.
         run: |
           pip install pytest pydantic pydantic-settings python-dotenv \
-                      langchain-core rank-bm25
+                      langchain-core rank-bm25 langgraph jsonschema \
+                      fastapi httpx pyyaml
       - name: Run fast tier
-        run: pytest -m "not integration and not heavy and not llm" -v
+        # `not slow` is redundant today (every slow test is also heavy) but is
+        # stated so the gate does not silently acquire a 40-minute job if that
+        # pairing is ever broken.
+        run: pytest -m "not integration and not heavy and not llm and not slow" -v
 
   evaluation-gate:
     name: Golden dataset regression gate
@@ -101,11 +108,14 @@ jobs:
         run: python -m src.ingestion.ingest --reset
 
       - name: Run deterministic retrieval evaluation
+        # The retrieval layer measures BM25 + dense + RRF only. It does not load
+        # the cross-encoder: reranking is a separate, heavy benchmark and has no
+        # place in a per-PR gate.
         run: |
           python -m src.evaluation.run_eval \
-            --tier retrieval \
-            --save \
-            --fail-on-regression
+            --retrieval \
+            --fail-on-regression \
+            --output reports/ci_evaluation.json
 
       - name: Run integration tests
         run: pytest -m "integration and not llm" -v

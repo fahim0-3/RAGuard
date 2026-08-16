@@ -99,32 +99,41 @@ streamlit run frontend/app.py
 
 ## Evaluation
 
-Two tiers, separated on purpose.
+Evaluation is layered, and each layer reports what it actually measured. A layer that cannot
+run is reported `BLOCKED` — never skipped silently, and never counted as a pass.
 
-**Tier 1 — deterministic, blocks merges.** Retrieval-only metrics with no LLM call: hit rate,
-MRR, exact-keyword recall, mean confidence. Identical code always produces identical numbers,
-which is the only property that makes a merge gate trustworthy.
+**Deterministic, blocks merges.** Retrieval metrics with no LLM call and no cross-encoder:
+hit rate, recall, MRR, exact-keyword recall, citation-ID validity. Identical code produces
+identical numbers, which is the only property that makes a merge gate trustworthy.
 
 ```bash
-python -m src.evaluation.run_eval --tier retrieval --save --fail-on-regression
+python -m src.evaluation.run_eval --retrieval --fail-on-regression
 ```
 
-**Tier 2 — LLM-judged, reports only.** End-to-end behaviour and the Ragas suite (faithfulness,
-response relevancy, context precision and recall). These vary between runs on identical code, so
-they run nightly and never block a merge.
+**LLM-judged, reports only.** End-to-end outcomes and safety counts. These call a provider, so
+they vary between runs and are evidence rather than a merge gate.
 
 ```bash
-python -m src.evaluation.run_eval --tier e2e --save
+python -m src.evaluation.run_eval --generation --safety
 ```
 
+**Everything, including the RAGAS availability probe:**
+
 ```bash
-python -m src.evaluation.run_eval --tier ragas --save
+python -m src.evaluation.run_eval --all
+```
+
+The reranker benchmark is deliberately excluded from every mode above — it reranks all 50 cases
+with a 568 M parameter cross-encoder and takes roughly forty minutes on CPU:
+
+```bash
+python -m src.evaluation.reranking_eval
 ```
 
 Test tiers mirror the same split:
 
 ```bash
-pytest -m "not integration and not heavy and not llm"
+pytest -m "not integration and not heavy and not llm and not slow"
 ```
 
 Thresholds live in [baseline.json](src/evaluation/baseline.json). Raising a threshold to turn a

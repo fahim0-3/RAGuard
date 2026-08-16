@@ -63,22 +63,47 @@ jobs:
       - name: Ingest corpus
         run: python -m src.ingestion.ingest --reset
 
-      - name: End-to-end evaluation
+      - name: Generation and safety evaluation
         if: inputs.tier != 'ragas'
-        run: python -m src.evaluation.run_eval --tier e2e --save
+        # Safety is scored from the same run, so a retrieval or generation gain
+        # cannot mask a fabricated-citation regression.
+        run: |
+          python -m src.evaluation.run_eval \
+            --generation --safety \
+            --output reports/nightly_generation.json
 
-      - name: Ragas evaluation
+      - name: RAGAS evaluation
         if: inputs.tier != 'e2e'
-        run: python -m src.evaluation.run_eval --tier ragas --save
+        # Reports RAGAS_NOT_AVAILABLE rather than failing when the library
+        # cannot import; the step must not turn a dependency break into a
+        # metric result either way.
+        run: |
+          python -m src.evaluation.run_eval \
+            --generation --ragas \
+            --output reports/nightly_ragas.json
 
       - name: Publish summary
         if: always()
+        # Reads the Phase I report shape (layers + gates). Tolerates a missing
+        # or partial report so a failed evaluation still produces a summary
+        # explaining what was blocked.
         run: |
           echo "## Nightly evaluation" >> "$GITHUB_STEP_SUMMARY"
-          for report in reports/*.json; do
+          for report in reports/nightly_*.json; do
+            [ -e "$report" ] || continue
             echo "### $(basename "$report")" >> "$GITHUB_STEP_SUMMARY"
             echo '```json' >> "$GITHUB_STEP_SUMMARY"
-            python -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))['metrics'], indent=2))" "$report" >> "$GITHUB_STEP_SUMMARY"
+            python - "$report" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          print(json.dumps({
+              "gates": data.get("gates", {}).get("by_category", {}),
+              "status": data.get("gates", {}).get("status"),
+              "failures": data.get("gates", {}).get("failures", []),
+              "layers": {k: v.get("status") for k, v in data.get("layers", {}).items()},
+              "metrics": {k: v.get("metrics", {}) for k, v in data.get("layers", {}).items()},
+          }, indent=2))
+          PY
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           done
 
