@@ -1,25 +1,66 @@
 """Streamlit demonstration UI.
 
-The interface is built around the guard rails rather than the chat bubble. A
-plain RAG demo shows an answer; this one shows why the answer was allowed
-through, or why it was refused: confidence scores, the rewritten queries the
-healing loop tried, per-claim citation verdicts, and the full decision trace.
+Built around the guard rails rather than the chat bubble. A plain RAG demo shows
+an answer; this one shows why the answer was allowed through, or why it was
+refused: the evidence grade, the rewrites the healing loop tried, the citation
+verdict, and the decision path through the workflow.
+
+No RAG logic lives here. The UI posts to FastAPI and renders what comes back;
+every display decision is a pure function in `presenter.py`, which is where the
+tests are. That split is deliberate — the interesting behaviour is "how should
+an abstention look", and that should not require a browser to verify.
 
 Run:  streamlit run frontend/app.py
 """
 
 from __future__ import annotations
 
-import json
 import os
+import sys
+from pathlib import Path
 
 import httpx
 import streamlit as st
 
+# `streamlit run frontend/app.py` puts only `frontend/` on sys.path, so the
+# package import below needs the repository root added explicitly.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from frontend.presenter import present  # noqa: E402
+
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
-REQUEST_TIMEOUT = 180.0
+REQUEST_TIMEOUT = float(os.getenv("API_TIMEOUT_S", "180"))
 
 st.set_page_config(page_title="RAGuard", page_icon="🛡️", layout="wide")
+
+EXAMPLES = [
+    "How long does a refund take to reach my credit card?",
+    "What does error PAY-402 mean at checkout?",
+    "I have a problem with my order",
+    "Can I get a mortgage or a personal loan through your store?",
+    "I was charged twice for the same order",
+]
+
+
+def call_api(base_url: str, question: str) -> dict:
+    """Post the question. Transport failures become an error view, not a crash."""
+    try:
+        response = httpx.post(
+            f"{base_url}/query", json={"query": question}, timeout=REQUEST_TIMEOUT
+        )
+    except httpx.HTTPError as exc:
+        return {"error": "unreachable", "detail": f"Could not reach the API: {exc}"}
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return {"error": "bad_response", "detail": f"API returned status {response.status_code}"}
+
+    if response.status_code >= 400 and "error" not in payload:
+        payload = {"error": "http_error", "detail": f"API returned {response.status_code}"}
+    return payload
 
 
 # --------------------------------------------------------------------------
@@ -31,19 +72,25 @@ with st.sidebar:
     st.caption("Self-healing hybrid RAG with citation verification")
 
     api_url = st.text_input("API base URL", API_BASE_URL)
-    use_llm_rewrite = st.toggle("LLM query rewriting", value=True)
-    use_llm_verification = st.toggle(
-        "LLM citation entailment", value=False, help="Slower, non-deterministic, more thorough"
-    )
 
     st.divider()
     st.subheader("Service status")
     try:
         health = httpx.get(f"{api_url}/health", timeout=10.0).json()
-        st.success(f"{health['status']} · {health.get('chunks_indexed', 0)} chunks")
-        st.caption(f"Provider: {health.get('llm_provider', 'unknown')}")
+        st.success(f"API {health.get('status', 'unknown')} · v{health.get('version', '?')}")
     except Exception as exc:
         st.error(f"API unreachable: {exc}")
+
+    try:
+        readiness = httpx.get(f"{api_url}/ready", timeout=15.0)
+        if readiness.status_code == 200:
+            st.success("Dependencies ready")
+        else:
+            st.warning(readiness.json().get("detail", "Not ready"))
+        with st.expander("Readiness detail"):
+            st.json(readiness.json().get("checks", {}))
+    except Exception:
+        st.caption("Readiness unavailable")
 
     with st.expander("Active configuration"):
         try:
@@ -58,101 +105,68 @@ with st.sidebar:
 
 st.header("Ask the support assistant")
 
-EXAMPLES = [
-    "How long does a refund take to reach my credit card?",
-    "What does error PAY-402 mean at checkout?",
-    "My parcel never turned up. When do you count it as actually lost?",
-    "My AuraBrew X200 is showing E04, what should I do?",
-    "Can I get a mortgage or a personal loan through your store?",
-]
-
-example = st.selectbox("Example questions", ["—", *EXAMPLES])
-question = st.text_area(
-    "Question",
-    value="" if example == "—" else example,
-    height=90,
-    placeholder="Ask about refunds, returns, damage, delivery, payments, or the product manual",
-)
+example = st.selectbox("Example questions", ["(type your own)", *EXAMPLES])
+default_text = "" if example == "(type your own)" else example
+question = st.text_area("Question", value=default_text, height=90)
 
 if st.button("Ask", type="primary", disabled=not question.strip()):
-    with st.spinner("Retrieving, verifying, and deciding..."):
-        try:
-            response = httpx.post(
-                f"{api_url}/query",
-                json={
-                    "question": question,
-                    "use_llm_rewrite": use_llm_rewrite,
-                    "use_llm_verification": use_llm_verification,
-                },
-                timeout=REQUEST_TIMEOUT,
-            )
-            response.raise_for_status()
-            result = response.json()
-        except Exception as exc:
-            st.error(f"Request failed: {exc}")
-            st.stop()
+    with st.spinner("Retrieving, grading evidence, and verifying citations…"):
+        payload = call_api(api_url, question.strip())
+    st.session_state["view"] = present(payload)
 
-    # --- Verdict ---------------------------------------------------------
-    if result["abstained"]:
-        st.warning("**Abstained.** " + result["answer"])
-        st.caption(f"Reason: `{result['abstain_reason']}`")
-    else:
-        st.success(result["answer"])
+view = st.session_state.get("view")
 
-    # --- Guard-rail metrics ---------------------------------------------
-    confidence = result.get("confidence", {})
-    citation_report = result.get("citation_report", {})
+if view is None:
+    st.info("Ask a question to see the decision path.")
+else:
+    render = {
+        "success": st.success,
+        "info": st.info,
+        "warning": st.warning,
+        "error": st.error,
+    }[view.kind]
+    render(f"**{view.heading}** — {view.explanation}")
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Top confidence", f"{confidence.get('top_score', 0):.2f}", confidence.get("level"))
-    col2.metric("Score margin", f"{confidence.get('margin', 0):.2f}")
-    col3.metric("Healing retries", result.get("healing_attempts", 0))
-    col4.metric("Latency", f"{result.get('latency_ms', 0) / 1000:.1f}s")
+    if view.body:
+        st.markdown(view.body)
 
-    # --- Citations -------------------------------------------------------
-    st.subheader("Citations")
-    citations = result.get("citations", [])
-    if not citations:
-        st.caption("No citations. The system did not release an answer.")
-    for citation in citations:
-        with st.expander(f"{citation['citation_label']} · rerank {citation.get('rerank_score', 0):.2f}"):
-            st.markdown(f"**Source:** `{citation['source']}`")
-            st.text(citation["content"])
+    if view.is_error:
+        st.stop()
 
-    # --- Verification detail --------------------------------------------
-    if citation_report:
-        st.subheader("Claim verification")
-        claims = citation_report.get("claims", [])
-        if claims:
-            st.dataframe(
-                [
-                    {
-                        "Claim": c["claim"],
-                        "Supported": "yes" if c["supported"] else "no",
-                        "Overlap": c["overlap"],
-                        "Missing facts": ", ".join(c["missing_facts"]) or "—",
-                        "Method": c["method"],
-                    }
-                    for c in claims
-                ],
-                use_container_width=True,
-                hide_index=True,
-            )
-        if citation_report.get("invalid_labels"):
-            st.error(f"Invented citation labels: {citation_report['invalid_labels']}")
+    columns = st.columns(len(view.metrics))
+    for column, (label, value) in zip(columns, view.metrics.items(), strict=True):
+        column.metric(label, value)
 
-    # --- Healing and trace ----------------------------------------------
-    if result.get("rewritten_queries"):
-        st.subheader("Self-healing rewrites")
-        for variant in result["rewritten_queries"]:
-            st.markdown(f"- `{variant}`")
+    st.caption(view.verification)
+    if view.failure_reason:
+        st.caption(f"Reason: {view.failure_reason}")
 
-    with st.expander("Decision trace (raw)"):
-        st.code(json.dumps(result.get("trace", []), indent=2), language="json")
+    # -- Citations, exactly as validated server-side --------------------
+    if view.citations:
+        st.subheader("Citations")
+        for citation in view.citations:
+            header = f"{citation['policy_id']} · {citation['label']}"
+            with st.expander(header):
+                st.caption(
+                    f"source: {citation['source']} · chunk_index: {citation['chunk_index']} "
+                    f"· chunk_id: {citation['chunk_id']}"
+                )
+                st.write(citation["excerpt"])
+    elif view.outcome == "answer":
+        st.warning("This answer carries no citations, which should not happen.")
 
+    # -- Self-healing surface --------------------------------------------
+    if view.rewritten_queries:
+        st.subheader("Query rewrites tried")
+        for index, rewritten in enumerate(view.rewritten_queries, start=1):
+            st.code(f"{index}. {rewritten}", language=None)
 
-st.divider()
-st.caption(
-    "RAGuard abstains rather than guessing. An abstention is a correct outcome "
-    "when the corpus does not contain the answer."
-)
+    # -- Decision path (operational state only, never reasoning) ----------
+    if view.trace:
+        st.subheader("Decision path")
+        st.markdown(
+            "  \n".join(f"{row['step']}. {row['label']}" for row in view.trace)
+        )
+
+    if view.request_id:
+        st.caption(f"request_id: {view.request_id}")

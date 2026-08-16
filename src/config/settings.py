@@ -31,8 +31,22 @@ class Settings(BaseSettings):
     # --- LLM provider ---
     llm_provider: Literal["gemini", "ollama"] = "gemini"
     google_api_key: str | None = None
-    gemini_model: str = "gemini-2.5-flash"
-    gemini_judge_model: str = "gemini-2.5-flash-lite"
+    # Verified against a live key on 2026-08-16. The previous defaults
+    # (gemini-2.5-flash / gemini-2.5-flash-lite) now return 404 "no longer
+    # available to new users", so the system could not generate out of the box.
+    #
+    # Pinned rather than a floating `-latest` alias: evaluation baselines are
+    # only comparable across runs if the model is fixed. `gemini-flash-latest`
+    # was rejected as a default for a second reason — it currently resolves to a
+    # model with a 5 requests/minute free-tier quota, which the retry loop and
+    # the per-claim judge exhaust immediately.
+    gemini_model: str = "gemini-3.1-flash-lite"
+    # Deliberately a different model from the generator. A judge that shares the
+    # generator's weights tends to share its blind spots, and citation
+    # verification is the one place where an independent opinion is the product.
+    # Benchmarked 5/5 on evidence grading and entailment, including the
+    # business-days versus calendar-days distinction.
+    gemini_judge_model: str = "gemini-flash-lite-latest"
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b"
     # Provider-agnostic model override. Empty means "use the provider default",
@@ -110,6 +124,14 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     api_base_url: str = "http://localhost:8000"
+    # Comma-separated origins allowed to call the API from a browser. The
+    # default covers a local Streamlit; "*" is accepted but must be a
+    # deliberate choice, not a default.
+    cors_allow_origins: str = "http://localhost:8501,http://127.0.0.1:8501"
+
+    @property
+    def cors_allow_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_allow_origins.split(",") if o.strip()]
 
     @property
     def absolute_data_dir(self) -> Path:

@@ -32,11 +32,27 @@ services:
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       MODEL_DEVICE: cpu
       HF_HOME: /models
+      # The browser talks to Streamlit's origin, so the API must allow it.
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:8501,http://127.0.0.1:8501}
     ports:
       - "8000:8000"
     volumes:
       # Persist Hugging Face weights so the ~2.5 GB download happens once.
       - raguard_models:/models
+    profiles: ["full"]
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: raguard-frontend
+    depends_on:
+      - api
+    environment:
+      # Server-side calls inside the compose network, not from the browser.
+      API_BASE_URL: http://api:8000
+    ports:
+      - "8501:8501"
     profiles: ["full"]
 
 volumes:
