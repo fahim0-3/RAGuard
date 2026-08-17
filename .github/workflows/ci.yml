@@ -48,10 +48,20 @@ jobs:
         # The list must cover everything the fast tier imports — it grew through
         # Phases E to H (generation, graph, API, frontend), and an incomplete
         # list fails at import, which looks like a code failure and is not.
+        #
+        # The database drivers are here despite this job never opening a
+        # connection: `tests/test_api.py` imports `api.main`, which imports
+        # `vector_store`, which imports psycopg, psycopg_pool, and
+        # pgvector.psycopg at module scope. Importing is not connecting.
+        # Likewise `tests/test_ingestion.py` reaches langchain_text_splitters
+        # through `src.ingestion.ingest`. Every package here is already pinned
+        # in requirements.txt; this list is the torch-free subset of it, not a
+        # second source of truth.
         run: |
           pip install pytest pydantic pydantic-settings python-dotenv \
-                      langchain-core rank-bm25 langgraph jsonschema \
-                      fastapi httpx pyyaml
+                      langchain-core langchain-text-splitters rank-bm25 \
+                      langgraph jsonschema fastapi httpx pyyaml \
+                      "psycopg[binary]" psycopg-pool pgvector
       - name: Run fast tier
         # `not slow` is redundant today (every slow test is also heavy) but is
         # stated so the gate does not silently acquire a 40-minute job if that
