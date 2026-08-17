@@ -18,18 +18,15 @@ import pytest
 
 from src.config import PROJECT_ROOT
 from src.evaluation.gates import (
-    GENERATION_GATES,
     RETRIEVAL_GATES,
     SAFETY_GATES,
     Gate,
-    GateSuite,
     all_gates,
     evaluate_gates,
 )
 from src.evaluation.ragas_adapter import build_ragas_samples
 from src.evaluation.ragas_eval import RAGAS_METRIC_PLAN, check_ragas_available, run_ragas_evaluation
 from src.evaluation.safety_eval import evaluate_safety
-
 
 # --------------------------------------------------------------------------
 # 5. Threshold enforcement
@@ -564,3 +561,149 @@ def test_llm_evaluation_is_a_separate_workflow_from_the_merge_gate():
     assert "GOOGLE_API_KEY" not in ci or "# " in ci, (
         "the deterministic merge gate must not depend on a provider key"
     )
+
+
+# --------------------------------------------------------------------------
+# A blocked layer is not a pass
+# --------------------------------------------------------------------------
+
+
+def _suite(*results):
+    from src.evaluation.gates import GateSuite
+
+    return GateSuite(results=list(results))
+
+
+def test_blocked_layer_never_reports_pass():
+    """Zero failing gates is not the same thing as a passing evaluation.
+
+    Regression guard: the CLI previously derived `overall` from the gate status
+    alone, so a run whose only layer was BLOCKED applied no gates and printed
+    PASS. A missing database must never read as a green build.
+    """
+    from src.evaluation.run_eval import overall_status
+
+    layers = {"safety": {"status": "BLOCKED", "reason": "SAFETY_REQUIRES_GENERATION"}}
+
+    assert overall_status(layers, _suite()) == "BLOCKED"
+
+
+def test_blocked_layer_outranks_passing_gates():
+    """One measured layer passing does not excuse another that never ran."""
+    from src.evaluation.gates import Gate, GateResult
+    from src.evaluation.run_eval import overall_status
+
+    passing = GateResult(
+        gate=Gate(metric="mrr_at_5", category="retrieval", target=0.84,
+                  provenance="Phase D measured"),
+        measured=0.88,
+        status="PASS",
+    )
+    layers = {
+        "retrieval": {"status": "MEASURED"},
+        "generation": {"status": "BLOCKED", "reason": "LLM_NOT_CONFIGURED"},
+    }
+
+    assert overall_status(layers, _suite(passing)) == "BLOCKED"
+
+
+def test_no_gates_at_all_is_not_measured():
+    from src.evaluation.run_eval import overall_status
+
+    assert overall_status({}, _suite()) == "NOT_MEASURED"
+
+
+def test_failing_gate_reports_fail():
+    from src.evaluation.gates import Gate, GateResult
+    from src.evaluation.run_eval import overall_status
+
+    failing = GateResult(
+        gate=Gate(metric="mrr_at_5", category="retrieval", target=0.90,
+                  provenance="Phase D measured"),
+        measured=0.80,
+        status="FAIL",
+    )
+
+    assert overall_status({"retrieval": {"status": "MEASURED"}}, _suite(failing)) == "FAIL"
+
+
+def test_report_records_overall_status_and_blocked_layers():
+    from src.evaluation.run_eval import build_report
+
+    layers = {"safety": {"status": "BLOCKED", "reason": "SAFETY_REQUIRES_GENERATION"}}
+    payload = build_report(layers, _suite())
+
+    assert payload["overall_status"] == "BLOCKED"
+    assert payload["blocked_layers"] == ["safety"]
+
+
+# --------------------------------------------------------------------------
+# Generation records must satisfy the RAGAS adapter's contract
+# --------------------------------------------------------------------------
+
+
+def test_generation_record_carries_every_field_the_adapter_reads():
+    """Regression guard for a silent Phase I integration bug.
+
+    The evaluator emitted `actual_outcome` / `answer_preview` and no
+    `ground_truth` or `contexts`, while the adapter read `outcome`, `answer`,
+    `ground_truth`, and `contexts`. Nothing raised: the adapter simply excluded
+    every case, so RAGAS would have reported on an empty dataset.
+    """
+    from src.evaluation.generation_eval import GenerationCaseResult
+
+    record = GenerationCaseResult(
+        case_id="GC-001",
+        question="How long do refunds take?",
+        expected_outcome="answer",
+        actual_outcome="answer",
+        outcome_matched=True,
+        answer="Refunds take 5 to 7 business days.",
+        ground_truth="Card refunds are released in 5 to 7 business days.",
+        contexts=["Refunds to credit and debit cards take 5 to 7 business days."],
+    ).to_dict()
+
+    for key in ("outcome", "answer", "contexts", "ground_truth"):
+        assert key in record, f"the RAGAS adapter reads {key!r} and it is absent"
+
+
+def test_adapter_accepts_a_real_generation_record():
+    from src.evaluation.generation_eval import GenerationCaseResult
+
+    record = GenerationCaseResult(
+        case_id="GC-001",
+        question="How long do refunds take?",
+        expected_outcome="answer",
+        actual_outcome="answer",
+        outcome_matched=True,
+        answer="Refunds take 5 to 7 business days.",
+        ground_truth="Card refunds are released in 5 to 7 business days.",
+        contexts=["Refunds to credit and debit cards take 5 to 7 business days."],
+    ).to_dict()
+
+    report = build_ragas_samples([record])
+
+    assert len(report.samples) == 1, report.to_dict()
+    assert report.excluded_no_reference == []
+    assert report.samples[0].reference
+
+
+def test_adapter_still_refuses_to_invent_a_reference():
+    """A case with no hand-written ground truth is excluded, never auto-filled."""
+    from src.evaluation.generation_eval import GenerationCaseResult
+
+    record = GenerationCaseResult(
+        case_id="GC-XXX",
+        question="q",
+        expected_outcome="answer",
+        actual_outcome="answer",
+        outcome_matched=True,
+        answer="Some generated answer.",
+        ground_truth="",
+        contexts=["some passage"],
+    ).to_dict()
+
+    report = build_ragas_samples([record])
+
+    assert len(report.samples) == 0
+    assert report.excluded_no_reference == ["GC-XXX"]

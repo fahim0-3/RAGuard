@@ -1,0 +1,112 @@
+name: Heavy reranker benchmark
+
+# Tier 3: the cross-encoder benchmark. Deliberately its own workflow.
+#
+# It reranks 20 candidates for every golden case, which is roughly a thousand
+# forward passes through a 568 M parameter model on CPU. That is tens of
+# minutes, so it has no place in a per-PR gate: a merge check nobody waits for
+# is a merge check people learn to bypass.
+#
+# Manual dispatch plus a weekly schedule. It reports evidence and never blocks
+# a merge — the Phase C comparison exists to answer "did reranking help", and
+# that question is answered deliberately, not on every push.
+
+on:
+  schedule:
+    # Sunday 03:00 UTC, away from the nightly LLM evaluation at 02:00.
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "What to run"
+        type: choice
+        options: [comparison, slow-tests, both]
+        default: comparison
+
+jobs:
+  reranker-benchmark:
+    name: Cross-encoder benchmark
+    runs-on: ubuntu-latest
+    # The benchmark itself is the long pole; the cap is generous on purpose so
+    # a slow runner reports a result rather than a timeout.
+    timeout-minutes: 120
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: raguard
+          POSTGRES_PASSWORD: raguard
+          POSTGRES_DB: raguard
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U raguard -d raguard"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://raguard:raguard@localhost:5432/raguard
+      MODEL_DEVICE: cpu
+      HF_HOME: ${{ github.workspace }}/.hf-cache
+      # Single-threaded BLAS. Sustained cross-encoder inference has been seen to
+      # fault under multi-threaded CPU math; the benchmark is long anyway, and a
+      # result that arrives is worth more than a faster one that crashes.
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Cache Hugging Face weights
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.hf-cache
+          key: hf-${{ runner.os }}-bge-m3-reranker-v2-m3
+          restore-keys: hf-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+
+      - name: Wait for PostgreSQL
+        # The service being "started" is not the same as it accepting queries.
+        run: |
+          for _ in $(seq 1 30); do
+            pg_isready -h localhost -p 5432 -U raguard -d raguard && exit 0
+            sleep 2
+          done
+          echo "PostgreSQL never became ready" >&2
+          exit 1
+
+      - name: Ingest corpus
+        run: python -m src.ingestion.ingest --reset
+
+      - name: Reranking comparison (BM25 / vector / RRF / RRF+reranker)
+        if: inputs.mode != 'slow-tests'
+        # No provider key: this layer is retrieval and reranking only.
+        run: |
+          python -m src.evaluation.run_eval \
+            --reranking \
+            --output reports/heavy_reranking.json
+
+      - name: Slow-marked tests
+        if: inputs.mode != 'comparison'
+        # The per-case gate on the reranked top 5, held out of the default
+        # integration tier by the `slow` marker.
+        run: pytest -m slow -v
+
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reranker-benchmark-${{ github.sha }}
+          # Reports only. Never the model cache, and never .env.
+          path: reports/heavy_*.json
+          retention-days: 90
+          if-no-files-found: warn

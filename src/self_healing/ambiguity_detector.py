@@ -55,9 +55,17 @@ AMBIGUITY_RULES: tuple[AmbiguityRule, ...] = (
         ),
         # Stems with \w*, so "refunds" and "tracking" match as readily as
         # "refund" and "track". A trailing \b here silently fails on plurals.
+        #
+        # The damage terms are resolvers, not an afterthought: this rule's
+        # subject pattern matches the bare word "late", which also occurs in
+        # "is it too late to report this?" — a damage-reporting-window question,
+        # not an underspecified delivery one. Golden case GC-008 was routed to
+        # clarification for exactly that reason. The other three rules already
+        # treat damage as a resolver; this one was the outlier.
         resolvers=re.compile(
             r"\b(track\w*|cancel\w*|refund\w*|redeliver\w*|miss\w*|lost|"
-            r"deliver\w*|date|when will|address|depot)\b",
+            r"deliver\w*|date|when will|address|depot|"
+            r"damag\w*|broken|crack\w*|faulty|smashed|unbox\w*)\b",
             re.IGNORECASE,
         ),
         clarifying_question=(

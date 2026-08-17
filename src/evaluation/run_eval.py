@@ -171,6 +171,24 @@ def run_reranking_layer() -> dict[str, Any]:
 # --------------------------------------------------------------------------
 
 
+def overall_status(layers: dict[str, dict[str, Any]], suite: GateSuite) -> str:
+    """The single status a human or CI job should read.
+
+    Deliberately not the gate status alone. A run whose layers were all blocked
+    applies zero gates, and zero failing gates is not the same thing as a
+    passing evaluation — reporting PASS there would turn a missing database
+    into a green build, which is the exact failure this phase exists to stop.
+    """
+    blocked = [name for name, layer in layers.items() if layer.get("status") == "BLOCKED"]
+    if blocked:
+        return "BLOCKED"
+    if suite.failures():
+        return "FAIL"
+    if not suite.results:
+        return "NOT_MEASURED"
+    return "PASS"
+
+
 def build_report(layers: dict[str, dict[str, Any]], suite: GateSuite) -> dict[str, Any]:
     settings = get_settings()
     from src.evaluation.metrics import golden_dataset_version
@@ -181,6 +199,10 @@ def build_report(layers: dict[str, dict[str, Any]], suite: GateSuite) -> dict[st
         "phase": "I",
         "evaluation_version": EVALUATION_VERSION,
         "timestamp": datetime.now(UTC).isoformat(),
+        "overall_status": overall_status(layers, suite),
+        "blocked_layers": [
+            name for name, layer in layers.items() if layer.get("status") == "BLOCKED"
+        ],
         "reproducibility": {
             "dataset_version": golden_dataset_version(),
             "prompt_version": PROMPT_VERSION,
@@ -261,7 +283,13 @@ def print_summary(payload: dict[str, Any], layers: dict[str, dict[str, Any]]) ->
         for line in gates["failures"]:
             print(f"    - {line}")
 
-    print(f"\n  overall: {gates['status']}")
+    overall = payload["overall_status"]
+    print(f"\n  gate status: {gates['status']}")
+    print(f"  overall    : {overall}")
+    if overall == "BLOCKED":
+        print("    (a blocked layer was not evaluated; this is not a pass)")
+    elif overall == "NOT_MEASURED":
+        print("    (no gate had a measured value to check)")
 
 
 def main(argv: list[str] | None = None) -> int:

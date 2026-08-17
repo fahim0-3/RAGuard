@@ -64,6 +64,11 @@ class GenerationCaseResult:
     latency_ms: float = 0.0
     failure_reason: str | None = None
     infrastructure_failure: bool = False
+    #: Carried through for the RAGAS adapter, which needs the reference answer
+    #: and the passages the model actually saw. Without these the adapter has
+    #: to exclude every case, and RAGAS silently evaluates nothing.
+    ground_truth: str = ""
+    contexts: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -86,6 +91,12 @@ class GenerationCaseResult:
             "failure_reason": self.failure_reason,
             "infrastructure_failure": self.infrastructure_failure,
             "answer_preview": self.answer[:200],
+            # Keys the RAGAS adapter reads. Added alongside the originals
+            # rather than renaming them, so existing consumers keep working.
+            "outcome": self.actual_outcome,
+            "answer": self.answer,
+            "contexts": self.contexts,
+            "ground_truth": self.ground_truth,
         }
 
 
@@ -160,6 +171,11 @@ def evaluate_case(case: dict[str, Any], service: Any, known_policy_ids: set[str]
         latency_ms=(time.perf_counter() - started) * 1000.0,
         failure_reason=summary.get("failure_reason") or None,
         infrastructure_failure=infrastructure,
+        # The hand-written reference, never the model's own answer.
+        ground_truth=str(case.get("ground_truth") or ""),
+        # The passages the model actually saw, which is what faithfulness and
+        # context recall have to be measured against.
+        contexts=[c.content for c in (state.get("retrieved_chunks") or [])],
     )
 
 

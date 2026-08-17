@@ -41,8 +41,15 @@ __all__ = [
     "policy_ids_in",
 ]
 
-#: Document identifiers such as REF-001, and rule codes such as RT-014.
-_POLICY_ID_PATTERN = re.compile(r"\b[A-Z]{2,5}-\d{2,4}\b")
+#: Every identifier shape the corpus uses: document IDs (REF-001), rule and
+#: error codes (RT-014, PAY-402, RF-101), and three-part codes (RT-REJ-02,
+#: DEL-INV-03, PAY-BLK-03). The optional middle group is what makes the
+#: three-part form match whole; without it the pattern captured only the tail
+#: ("REJ-02"), which then matched nothing in the corpus.
+#:
+#: Kept identical to `claims._POLICY_ID` on purpose. Two divergent definitions
+#: of "identifier" is how the grader ended up stricter than the verifier.
+_POLICY_ID_PATTERN = re.compile(r"\b[A-Z]{2,5}-(?:[A-Z]{2,5}-)?\d{1,4}\b")
 
 # Every value is a placeholder, never a literal. A concrete `0.0` here gets
 # copied verbatim by smaller models, which then read as "no confidence" and
@@ -93,10 +100,29 @@ def deterministic_signals(query: str, chunks: list[RetrievedChunk]) -> dict[str,
     second_score = scores[1] if len(scores) > 1 else 0.0
 
     requested_ids = policy_ids_in(query)
+
+    # An identifier in the question is an unusually strong retrieval target: it
+    # either came back or it did not. What counts as "came back" has to be the
+    # identifier appearing in the retrieved *evidence*, not only as a document
+    # ID, because the corpus uses this shape for two different things:
+    # PAY-005 names a document, while PAY-402 is an error code documented
+    # *inside* it. Matching document IDs alone rejected every question about a
+    # code, which is the category exact-identifier retrieval is best at.
+    #
+    # The match is against the chunks actually retrieved for this query, never
+    # the corpus at large: an identifier that exists somewhere else is not
+    # evidence for this answer.
     retrieved_ids = {c.policy_id.upper() for c in chunks}
-    # A policy ID in the question is an unusually strong retrieval target: it
-    # either came back or it did not, with no interpretation required.
-    matched_ids = [pid for pid in requested_ids if pid in retrieved_ids]
+    evidence_text = "\n".join(c.content for c in chunks).upper()
+
+    matched_ids = [
+        pid
+        for pid in requested_ids
+        # Word-boundary matched, so "REF-001" is not satisfied by "REF-0012".
+        if pid in retrieved_ids
+        or re.search(rf"(?<![\w-]){re.escape(pid)}(?![\w-])", evidence_text)
+    ]
+    matched_as_document = [pid for pid in matched_ids if pid in retrieved_ids]
 
     return {
         "chunk_count": len(chunks),
@@ -106,6 +132,9 @@ def deterministic_signals(query: str, chunks: list[RetrievedChunk]) -> dict[str,
         "score_gap": round(top_score - second_score, 4),
         "requested_policy_ids": requested_ids,
         "matched_policy_ids": matched_ids,
+        # Retained so a trace still shows whether the question named a document
+        # or an identifier documented within one.
+        "matched_document_ids": matched_as_document,
         "policy_id_exact_match": bool(matched_ids),
         "policy_id_requested_but_missing": bool(requested_ids) and not matched_ids,
     }

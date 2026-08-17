@@ -660,3 +660,247 @@ def test_every_route_reaches_a_terminal_outcome(world, question, grades, verifie
     assert result["final_outcome"] == expected
     assert result["final_answer"], "every terminal outcome must produce customer-facing text"
     assert result["timestamps"].get("finished_at")
+
+
+# --------------------------------------------------------------------------
+# GC-008 regression: damage context outranks the delayed-order reading
+# --------------------------------------------------------------------------
+
+
+def test_gc008_damage_question_is_not_clarified():
+    """Golden case GC-008, found misrouted by the Phase I evaluation.
+
+    The `delayed_order` subject pattern matches the bare word "late", which also
+    appears in "is it too late to report this?" — a damage-reporting-window
+    question. The rule fired because damage terms were missing from its
+    resolvers, so a damaged-product question was answered with a delivery
+    clarification.
+    """
+    from src.self_healing.ambiguity_detector import detect_ambiguity
+
+    decision = detect_ambiguity(
+        "I only noticed the damage after unboxing a few days later. Is it too late?"
+    )
+
+    assert decision.ambiguous is False, decision.reason
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "I only noticed the damage after unboxing a few days later. Is it too late?",
+        "The item arrived cracked, is it too late to claim?",
+        "My espresso machine turned up broken, am I too late to report it?",
+        "It was damaged in transit and I am late reporting it",
+        "The mug was smashed on arrival, is it too late?",
+    ],
+    ids=["gc008", "cracked", "broken", "damaged", "smashed"],
+)
+def test_damage_context_defeats_the_delayed_order_rule(question):
+    from src.self_healing.ambiguity_detector import detect_ambiguity
+
+    assert detect_ambiguity(question).ambiguous is False
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "My order is late",
+        "My order is delayed",
+        "Where is my parcel?",
+        # "My delivery is held up" deliberately absent: `deliver\w*` has always
+        # been a resolver, so that phrasing never clarified. Unrelated to this
+        # fix, and not something to change under a GC-008 ticket.
+        "My order is held up",
+        "I am still waiting for my order",
+    ],
+    ids=["late", "delayed", "where_is", "held_up", "still_waiting"],
+)
+def test_genuine_delayed_order_questions_still_clarify(question):
+    """The fix must narrow the rule to correct cases, not disable it."""
+    from src.self_healing.ambiguity_detector import detect_ambiguity
+
+    decision = detect_ambiguity(question)
+
+    assert decision.ambiguous is True
+    assert decision.reason == "underspecified: delayed_order"
+    assert decision.clarifying_question
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_rule"),
+    [
+        ("I have a problem with my order", "underspecified: unspecified_problem"),
+        ("How long do I have?", "underspecified: bare_timeframe"),
+        ("Can I send it back?", "underspecified: bare_it_reference"),
+    ],
+    ids=["unspecified_problem", "bare_timeframe", "bare_it_reference"],
+)
+def test_other_ambiguity_rules_are_unaffected(question, expected_rule):
+    from src.self_healing.ambiguity_detector import detect_ambiguity
+
+    decision = detect_ambiguity(question)
+
+    assert decision.ambiguous is True
+    assert decision.reason == expected_rule
+
+
+def test_gc008_routes_to_retrieval_through_the_graph(world):
+    """End to end: the case now reaches retrieval instead of clarifying."""
+    result = run(
+        world,
+        "I only noticed the damage after unboxing a few days later. Is it too late?",
+    )
+
+    assert result["final_outcome"] == "answer"
+    assert NODE_RETRIEVE in result["node_sequence"]
+    assert NODE_CLARIFY not in result["node_sequence"]
+
+
+# --------------------------------------------------------------------------
+# Evidence-grader identifier handling (targeted Phase F fix)
+# --------------------------------------------------------------------------
+
+
+def _chunk(content: str, doc_id: str = "PAY-005", index: int = 1) -> RetrievedChunk:
+    return RetrievedChunk(
+        chunk_id=32,
+        content=content,
+        source="payment_failure_faq.txt",
+        chunk_index=index,
+        doc_id=doc_id,
+    )
+
+
+PAY_405_TABLE = (
+    "## 2. Gateway error codes\n"
+    "| PAY-402 | Insufficient funds | Retry with another card or top up the account |\n"
+    "| PAY-403 | Issuer declined, no reason given | Contact the card issuer |"
+)
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("What does error PAY-402 mean at checkout?", ["PAY-402"]),
+        ("What does reason code RF-101 mean?", ["RF-101"]),
+        ("What is inspection code RT-REJ-02?", ["RT-REJ-02"]),
+        ("What is investigation status DEL-INV-03?", ["DEL-INV-03"]),
+        ("What is rule PAY-BLK-03?", ["PAY-BLK-03"]),
+        ("What does REF-001 cover?", ["REF-001"]),
+    ],
+    ids=["error_code", "reason_code", "rt_rej", "del_inv", "pay_blk", "document_id"],
+)
+def test_identifiers_are_extracted_whole(question, expected):
+    """Three-part codes previously yielded only their tail fragment."""
+    from src.self_healing.evidence_grader import policy_ids_in
+
+    assert policy_ids_in(question) == expected
+
+
+@pytest.mark.parametrize(
+    ("question", "fragment"),
+    [
+        ("What is inspection code RT-REJ-02?", "REJ-02"),
+        ("What is investigation status DEL-INV-03?", "INV-03"),
+        ("What is rule PAY-BLK-03?", "BLK-03"),
+    ],
+    ids=["rej_02", "inv_03", "blk_03"],
+)
+def test_tail_fragments_are_not_extracted(question, fragment):
+    from src.self_healing.evidence_grader import policy_ids_in
+
+    assert fragment not in policy_ids_in(question)
+
+
+def test_grader_identifier_pattern_matches_phase_g():
+    """Two definitions of "identifier" is how the grader drifted stricter."""
+    from src.self_healing.claims import policy_ids as claims_ids
+    from src.self_healing.evidence_grader import policy_ids_in
+
+    for question in (
+        "What does error PAY-402 mean?",
+        "What is inspection code RT-REJ-02?",
+        "What does rule RT-014 say?",
+        "What is PAY-BLK-03?",
+    ):
+        assert policy_ids_in(question) == claims_ids(question), question
+
+
+def test_error_code_inside_its_document_is_sufficient():
+    """GC-003: PAY-402 is documented inside PAY-005, not as its own document."""
+    from src.self_healing.evidence_grader import grade_evidence
+
+    chunks = [_chunk(PAY_405_TABLE), _chunk("Support agents should ask for the code.", index=0)]
+
+    grade = grade_evidence("What does error PAY-402 mean at checkout?", chunks, use_llm=False)
+
+    assert grade.sufficient is True
+    assert grade.signals["matched_policy_ids"] == ["PAY-402"]
+    # It matched as evidence text, not as a document ID.
+    assert grade.signals["matched_document_ids"] == []
+
+
+def test_reason_code_inside_its_document_is_sufficient():
+    """GC-029: RF-101 is a refund reason code inside REF-001."""
+    from src.self_healing.evidence_grader import grade_evidence
+
+    chunks = [
+        _chunk(
+            "Requests after day 30 are rejected with reason code RF-101 (WINDOW_EXPIRED).",
+            doc_id="REF-001",
+        ),
+        _chunk("Refunds are released to the original payment method.", doc_id="REF-001", index=2),
+    ]
+
+    grade = grade_evidence("What does reason code RF-101 mean?", chunks, use_llm=False)
+
+    assert grade.sufficient is True
+
+
+def test_absent_identifier_is_still_insufficient():
+    """REF-999 exists nowhere; the relaxation must not become "accept anything"."""
+    from src.self_healing.evidence_grader import grade_evidence
+
+    chunks = [_chunk(PAY_405_TABLE), _chunk("Other payment guidance.", index=0)]
+
+    grade = grade_evidence("What is REF-999?", chunks, use_llm=False)
+
+    assert grade.sufficient is False
+    assert grade.signals["policy_id_requested_but_missing"] is True
+
+
+def test_identifier_elsewhere_in_the_corpus_does_not_count():
+    """Only the chunks retrieved for *this* query are evidence."""
+    from src.self_healing.evidence_grader import grade_evidence
+
+    # RT-014 is real and lives in RET-002, but neither chunk here mentions it.
+    chunks = [_chunk(PAY_405_TABLE), _chunk("Payment guidance.", index=0)]
+
+    grade = grade_evidence("What does rule RT-014 say?", chunks, use_llm=False)
+
+    assert grade.sufficient is False
+    assert grade.signals["matched_policy_ids"] == []
+
+
+def test_real_document_id_still_matches_as_a_document():
+    """The original policy-ID signal is extended, not replaced."""
+    from src.self_healing.evidence_grader import grade_evidence
+
+    chunks = [_chunk("Payment Failure FAQ content."), _chunk("More content.", index=0)]
+
+    grade = grade_evidence("What does PAY-005 cover?", chunks, use_llm=False)
+
+    assert grade.sufficient is True
+    assert grade.signals["matched_document_ids"] == ["PAY-005"]
+
+
+def test_identifier_match_respects_word_boundaries():
+    """A longer identifier must not satisfy a shorter one."""
+    from src.self_healing.evidence_grader import deterministic_signals
+
+    chunks = [_chunk("The code PAY-4021 is unrelated.")]
+
+    signals = deterministic_signals("What does PAY-402 mean?", chunks)
+
+    assert signals["matched_policy_ids"] == []
