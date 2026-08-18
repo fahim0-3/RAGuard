@@ -60,6 +60,22 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements.txt
 
+      - name: Enable pgvector extension
+        # The pgvector image ships the extension but does not enable it in any
+        # database. docker-compose mounts docker/init-db.sql to do that
+        # locally; GitHub Actions `services:` cannot mount a workspace file,
+        # so it has to happen here.
+        #
+        # It must happen before anything opens the pool. The pool's `configure`
+        # callback runs register_vector() on every connection, which raises
+        # "vector type not found" without the extension, so no connection ever
+        # becomes available and callers wait out the full 30s pool timeout.
+        # init_schema() cannot bootstrap it either: its own CREATE EXTENSION
+        # needs a pooled connection it can never obtain.
+        env:
+          PGPASSWORD: raguard
+        run: psql -h localhost -p 5432 -U raguard -d raguard -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
       - name: Ingest corpus
         run: python -m src.ingestion.ingest --reset
 
