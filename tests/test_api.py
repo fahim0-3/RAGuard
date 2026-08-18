@@ -77,8 +77,22 @@ class StubGraph:
 
 @pytest.fixture
 def client():
-    with TestClient(app, raise_server_exceptions=False) as test_client:
-        yield test_client
+    """A TestClient that does not run the application lifespan.
+
+    Entering `TestClient`'s context manager fires FastAPI's startup handler,
+    which calls `init_schema()` and then `count_chunks()`. Both open a psycopg
+    connection. This tier has no database by design, and the pool does not fail
+    fast on a refused connection — it waits out its 30 second timeout — so the
+    context manager cost 30s of *setup* per test, 38 times over. Locally the
+    database is usually up, which is why it only showed on CI.
+
+    None of these tests need the startup handler: they stub the graph and
+    exercise validation, routing, error translation, and response projection.
+    The end-to-end test builds its own `with TestClient(app)` so it still runs
+    the real lifespan against a real database.
+    """
+    test_client = TestClient(app, raise_server_exceptions=False)
+    yield test_client
     app.dependency_overrides.clear()
 
 
