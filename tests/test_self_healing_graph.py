@@ -31,6 +31,7 @@ from src.self_healing.graph import (
     SelfHealingGraph,
     build_graph,
 )
+from src.self_healing.query_rewriter import rewrite_once as _real_rewrite_once
 from src.self_healing.state import EvidenceGrade, VerificationResult
 
 # --------------------------------------------------------------------------
@@ -105,6 +106,24 @@ class StubVerifier:
         )
 
 
+def offline_rewrite(question, **kwargs):
+    """The real rewriter with its provider call disabled.
+
+    `graph.query_rewriter` calls `rewrite_once(..., use_llm=graph_use_llm)`,
+    which defaults to True, so the retry tests were reaching for a provider on
+    every rewrite — minutes of network waits and fallbacks in a tier that is
+    supposed to need neither.
+
+    Pinning `use_llm=False` rather than returning a canned string keeps the real
+    identifier-preservation logic under test. That matters here: nothing else
+    covers `_restore_protected`, and a stub that echoed the question back would
+    make `test_rewrite_preserves_protected_tokens` tautological — the token is
+    in the question, so it would trivially be in the output. The heuristic path
+    is pure regex and runs in ~5 ms.
+    """
+    return _real_rewrite_once(question, **{**kwargs, "use_llm": False})
+
+
 @pytest.fixture
 def world(monkeypatch):
     """Wire stubbed retrieval, reranking, grading and generation into the graph."""
@@ -134,6 +153,10 @@ def world(monkeypatch):
         return grades[index]
 
     monkeypatch.setattr(graph_module, "grade_evidence", fake_grade)
+    # Patched on `graph_module`, not on `query_rewriter`: graph.py did
+    # `from ... import rewrite_once`, so it holds its own reference and
+    # patching the source module would not affect the node.
+    monkeypatch.setattr(graph_module, "rewrite_once", offline_rewrite)
     return state
 
 
