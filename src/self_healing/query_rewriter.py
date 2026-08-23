@@ -147,6 +147,13 @@ _PRODUCT_PATTERN = re.compile(
     r"\b(?:AuraBrew\s*\w*|AB-X200-EU|X200)\b", re.IGNORECASE
 )
 
+_GENERIC_MISSING_HINTS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bgrader judged the passages incomplete\b", re.IGNORECASE),
+    re.compile(r"\bpassages? (?:are|were|look) incomplete\b", re.IGNORECASE),
+    re.compile(r"\binsufficient evidence\b", re.IGNORECASE),
+    re.compile(r"\bmore evidence\b", re.IGNORECASE),
+)
+
 
 #: Case-insensitive twin of `_IDENTIFIER_PATTERN`, matched against the original
 #: text so the customer's own casing is what gets preserved.
@@ -184,6 +191,19 @@ def _restore_protected(original: str, rewritten: str) -> str:
     return result.strip()
 
 
+def _useful_missing_information(missing_information: list[str] | None) -> list[str]:
+    """Keep corpus-facing hints and drop generic internal grader wording."""
+    useful: list[str] = []
+    for item in missing_information or []:
+        text = " ".join(str(item).split())
+        if not text:
+            continue
+        if any(pattern.search(text) for pattern in _GENERIC_MISSING_HINTS):
+            continue
+        useful.append(text)
+    return useful
+
+
 def rewrite_once(
     question: str,
     missing_information: list[str] | None = None,
@@ -200,7 +220,7 @@ def rewrite_once(
     if missing_information:
         # The grader already said what was absent; feeding that back is the
         # difference between a rephrase and a targeted second attempt.
-        hint = " ".join(missing_information[:2])
+        hint = " ".join(_useful_missing_information(missing_information)[:2])
 
     seeded = f"{question} {hint}".strip() if hint else question
 

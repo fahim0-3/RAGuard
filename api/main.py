@@ -21,13 +21,15 @@ Two boundaries are enforced here rather than trusted:
   connection string or a prompt, so clients receive a category and a request ID
   while the detail goes to the log.
 
-Models load lazily on first use. Call `/admin/warmup` after start-up to move
-that cost off the first user request.
+The embedding model is warmed in a background thread at start-up, so the
+first user query does not sit inside a multi-gigabyte download. `/ready` stays
+503 until that finishes; `/health` never waits on it.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -50,6 +52,11 @@ from api.schemas import (
 from src.config import Settings, get_settings
 from src.generation.llm_factory import LLMProviderError
 from src.retrieval.bm25 import get_bm25_index, refresh_bm25_index
+from src.retrieval.embeddings import (
+    is_model_loaded,
+    model_load_error,
+    warmup_embedding_model,
+)
 from src.retrieval.vector_store import close_pool, count_chunks, init_schema
 from src.self_healing.graph import SelfHealingGraph
 
@@ -72,6 +79,23 @@ async def lifespan(app: FastAPI):
         # Never crash on a dependency failure at start-up: /health must stay
         # reachable so the cause is diagnosable rather than a restart loop.
         logger.exception("Database initialisation failed at start-up")
+
+    # Load the embedding model off the request path. On a cold cache this
+    # downloads ~2.2 GB, which is far too long to sit inside the first user
+    # query — that is what made the UI look hung.
+    #
+    # A background thread rather than a blocking await, for two reasons:
+    # /health must answer immediately so the container is not killed by its own
+    # health check while warming, and `SentenceTransformer(...)` is synchronous
+    # so awaiting it would block the event loop entirely. `/ready` is the gate
+    # that stays closed until this finishes.
+    warmup = threading.Thread(
+        target=warmup_embedding_model,
+        name="embedding-warmup",
+        daemon=True,
+    )
+    warmup.start()
+
     yield
     close_pool()
 
@@ -218,6 +242,31 @@ def ready(settings: SettingsDep, response: JSONResponse = None) -> Any:  # noqa:
     else:
         checks["llm_provider"] = {"status": "configured", "provider": settings.llm_provider}
 
+    # The embedding model is a hard requirement for /query: without it there is
+    # no dense arm and no query vector. It used to be absent from this probe
+    # entirely, so /ready answered 200 while the first query blocked for the
+    # whole model download.
+    if is_model_loaded():
+        checks["embedding_model"] = {
+            "status": "loaded",
+            "model": settings.embedding_model,
+            "device": settings.model_device,
+        }
+    else:
+        error = model_load_error()
+        checks["embedding_model"] = {
+            "status": "failed" if error else "loading",
+            "model": settings.embedding_model,
+            "device": settings.model_device,
+            # Type name only. The message can carry a cache path.
+            "error": error.split(":")[0] if error else None,
+        }
+        problems.append(
+            "embedding model failed to load"
+            if error
+            else "embedding model still loading (first start downloads ~2.2 GB)"
+        )
+
     checks["retrieval"] = {"strategy": "hybrid_bm25_dense_rrf", "reranker": settings.reranker_model}
 
     if problems:
@@ -304,7 +353,7 @@ def to_response(
 
 
 @app.post("/query", response_model=QueryResponse)
-def query(request: QueryRequest, service: GraphDep) -> QueryResponse:
+def query(request: QueryRequest, service: GraphDep) -> QueryResponse | JSONResponse:
     """Run the self-healing workflow over one question.
 
     Every stage happens inside the graph. This function supplies a request ID,
@@ -312,6 +361,28 @@ def query(request: QueryRequest, service: GraphDep) -> QueryResponse:
     """
     request_id = request.request_id or str(uuid.uuid4())
     started = time.perf_counter()
+
+    # A caller can bypass the Streamlit readiness check and call this endpoint
+    # directly. Never put that request on the multi-gigabyte model download;
+    # the startup warmup owns initialization and the caller can retry once
+    # `/ready` reports success.
+    if not is_model_loaded():
+        failed = model_load_error() is not None
+        logger.warning(
+            "Query rejected before model readiness [request_id=%s, status=%s]",
+            request_id,
+            "failed" if failed else "loading",
+        )
+        return _error(
+            request_id,
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "model_unavailable" if failed else "service_not_ready",
+            (
+                "The embedding model failed to initialize. Check the API logs."
+                if failed
+                else "The service is still initializing the embedding model. Retry shortly."
+            ),
+        )
 
     logger.info("Query received [request_id=%s, chars=%d]", request_id, len(request.query))
 

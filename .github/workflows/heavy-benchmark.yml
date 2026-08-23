@@ -105,11 +105,35 @@ jobs:
 
       - name: Reranking comparison (BM25 / vector / RRF / RRF+reranker)
         if: inputs.mode != 'slow-tests'
+        # Calls `reranking_eval` directly, NOT `run_eval --reranking`.
+        #
+        # `run_eval`'s reranking layer is a deliberate no-op: it returns
+        # NOT_RUN and points here, so a forty-minute benchmark can never be
+        # triggered by a CLI flag that CI might pass by default. Invoking it
+        # from this workflow meant the benchmark measured nothing while the
+        # job still exited 0 and looked successful.
+        #
         # No provider key: this layer is retrieval and reranking only.
         run: |
-          python -m src.evaluation.run_eval \
-            --reranking \
+          python -m src.evaluation.reranking_eval \
             --output reports/heavy_reranking.json
+
+      - name: Confirm the benchmark actually measured something
+        if: inputs.mode != 'slow-tests'
+        # A benchmark reporting NOT_MEASURED must not read as a green run.
+        run: |
+          python -c "
+          import json, pathlib, sys
+          path = pathlib.Path('reports/heavy_reranking.json')
+          if not path.exists():
+              sys.exit('no report written: the benchmark did not run')
+          report = json.loads(path.read_text(encoding='utf-8'))
+          measured = [k for k, v in (report.get('metrics') or {}).items() if v]
+          if len(measured) < 4:
+              sys.exit(f'expected 4 measured configurations, got {measured}')
+          print('measured configurations:', measured)
+          print('reranker_used:', report.get('reranker_used'))
+          "
 
       - name: Slow-marked tests
         if: inputs.mode != 'comparison'

@@ -105,13 +105,66 @@ class OutcomeView:
     is_error: bool = False
 
 
-def error_view(message: str, request_id: str = "") -> OutcomeView:
-    """Transport-level failure: the API was unreachable or returned an error."""
-    style = OUTCOME_STYLES["error"]
+#: How each failure code is presented. A service that is still warming up and a
+#: question that is too short are not crashes, and rendering them in the same
+#: red box as an internal error tells the user nothing about what to do next.
+ERROR_STYLES: dict[str, tuple[str, Kind, str]] = {
+    "not_ready": (
+        "Service still starting",
+        "warning",
+        "The API is up but cannot answer yet. This is normal on a first start.",
+    ),
+    "service_not_ready": (
+        "Service still starting",
+        "warning",
+        "The API is up but cannot answer yet. This is normal on a first start.",
+    ),
+    "model_unavailable": (
+        "Model unavailable",
+        "error",
+        "The embedding model could not be initialized.",
+    ),
+    "invalid_question": (
+        "Check your question",
+        "info",
+        "The question did not meet the length limits.",
+    ),
+    "timeout": (
+        "Timed out",
+        "error",
+        "The request took too long. Nothing was answered, so nothing was fabricated.",
+    ),
+    "unreachable": (
+        "API unreachable",
+        "error",
+        "The frontend could not connect to the API.",
+    ),
+    "provider_unavailable": (
+        "Answering service unavailable",
+        "error",
+        "The language model provider could not be reached or is misconfigured.",
+    ),
+    "bad_response": (
+        "Unexpected response",
+        "error",
+        "The API replied with something this UI could not read.",
+    ),
+}
+
+
+def error_view(message: str, request_id: str = "", code: str = "") -> OutcomeView:
+    """A failure the pipeline never entered: transport, readiness, or input.
+
+    Distinct from an `abstain` outcome, which means the pipeline *did* run and
+    declined to answer.
+    """
+    heading, kind, explanation = ERROR_STYLES.get(
+        code, (OUTCOME_STYLES["error"].heading, "error", OUTCOME_STYLES["error"].explanation)
+    )
     return OutcomeView(
-        heading=style.heading,
-        kind="error",
-        explanation=style.explanation,
+        heading=heading,
+        kind=kind,
+        explanation=explanation,
         outcome="error",
         body=message,
         request_id=request_id,
@@ -173,6 +226,7 @@ def present(payload: dict[str, Any]) -> OutcomeView:
         return error_view(
             payload.get("detail") or str(payload.get("error")),
             request_id=str(payload.get("request_id") or ""),
+            code=str(payload.get("error") or ""),
         )
 
     outcome = str(payload.get("outcome") or "error")

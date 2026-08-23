@@ -76,7 +76,7 @@ class StubGraph:
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
     """A TestClient that does not run the application lifespan.
 
     Entering `TestClient`'s context manager fires FastAPI's startup handler,
@@ -91,6 +91,10 @@ def client():
     The end-to-end test builds its own `with TestClient(app)` so it still runs
     the real lifespan against a real database.
     """
+    # Transport tests exercise an API that is ready unless a test explicitly
+    # says otherwise. Model lifecycle behavior has focused coverage in
+    # test_model_readiness.py.
+    monkeypatch.setattr("api.main.is_model_loaded", lambda: True)
     test_client = TestClient(app, raise_server_exceptions=False)
     yield test_client
     app.dependency_overrides.clear()
@@ -174,6 +178,10 @@ def use_settings(**overrides):
 
 def test_ready_is_ready_when_dependencies_are_present(client, monkeypatch):
     monkeypatch.setattr("api.main.count_chunks", lambda: 22)
+    # The embedding model is a readiness dependency: without it there is no
+    # query vector, so /ready must not claim success. Stated explicitly here
+    # rather than relying on whatever the process happened to have loaded.
+    monkeypatch.setattr("api.main.is_model_loaded", lambda: True)
     use_settings(llm_provider="ollama")
 
     response = client.get("/ready")
@@ -184,6 +192,7 @@ def test_ready_is_ready_when_dependencies_are_present(client, monkeypatch):
 
 def test_ready_flags_a_missing_api_key(client, monkeypatch):
     monkeypatch.setattr("api.main.count_chunks", lambda: 22)
+    monkeypatch.setattr("api.main.is_model_loaded", lambda: True)
     use_settings(llm_provider="gemini", google_api_key=None)
 
     response = client.get("/ready")
@@ -194,6 +203,7 @@ def test_ready_flags_a_missing_api_key(client, monkeypatch):
 
 def test_ready_never_echoes_the_key_value(client, monkeypatch):
     monkeypatch.setattr("api.main.count_chunks", lambda: 22)
+    monkeypatch.setattr("api.main.is_model_loaded", lambda: True)
     use_settings(llm_provider="gemini", google_api_key="secret-value-xyz")
 
     assert "secret-value-xyz" not in client.get("/ready").text

@@ -128,6 +128,21 @@ def test_api_error_payload_becomes_an_error_view():
     assert view.body == "Provider is unavailable."
 
 
+@pytest.mark.parametrize(
+    ("code", "heading", "kind"),
+    [
+        ("service_not_ready", "Service still starting", "warning"),
+        ("model_unavailable", "Model unavailable", "error"),
+    ],
+)
+def test_model_readiness_errors_have_explicit_safe_views(code, heading, kind):
+    view = present({"error": code, "detail": "Safe operational message."})
+
+    assert view.heading == heading
+    assert view.kind == kind
+    assert view.body == "Safe operational message."
+
+
 def test_unreachable_api_is_an_error_view():
     view = error_view("Could not reach the API: connection refused")
 

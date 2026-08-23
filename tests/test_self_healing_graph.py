@@ -918,6 +918,108 @@ def test_real_document_id_still_matches_as_a_document():
     assert grade.signals["matched_document_ids"] == ["PAY-005"]
 
 
+class StrictOverviewJudge:
+    def invoke(self, payload):
+        return {
+            "relevant": True,
+            "sufficient": False,
+            "confidence": 0.4,
+            "missing_information": ["every section in the source policy"],
+            "rationale": "some policy sections are absent",
+        }
+
+
+def test_broad_policy_overview_can_pass_an_overstrict_judge():
+    """A policy overview asks for a useful summary, not the whole document."""
+    from src.self_healing.evidence_grader import grade_evidence
+
+    chunks = [
+        RetrievedChunk(
+            chunk_id=1,
+            content="Standard items may be returned within 30 calendar days. Electronics carry a 14-day return window.",
+            source="return_policy.txt",
+            chunk_index=0,
+            doc_id="RET-002",
+            normalised_rerank_score=0.94,
+        ),
+        RetrievedChunk(
+            chunk_id=2,
+            content="Returned items must be unused, in original packaging, and include all accessories.",
+            source="return_policy.txt",
+            chunk_index=1,
+            doc_id="RET-002",
+            normalised_rerank_score=0.82,
+        ),
+    ]
+
+    grade = grade_evidence(
+        "What is the return policy?",
+        chunks,
+        use_llm=True,
+        chain=StrictOverviewJudge(),
+    )
+
+    assert grade.sufficient is True
+    assert grade.missing_information == []
+    assert grade.signals["policy_overview_match"] is True
+
+
+def test_overview_override_does_not_accept_adjacent_unsupported_topics():
+    """The overview relaxation is exact; adjacent topics still need a judge pass."""
+    from src.self_healing.evidence_grader import grade_evidence
+
+    chunks = [
+        RetrievedChunk(
+            chunk_id=1,
+            content="Payment failures may show gateway error PAY-402 for insufficient funds.",
+            source="payment_failure_faq.txt",
+            chunk_index=1,
+            doc_id="PAY-005",
+            normalised_rerank_score=0.91,
+        ),
+        RetrievedChunk(
+            chunk_id=2,
+            content="Pending authorisations are released by the issuing bank.",
+            source="payment_failure_faq.txt",
+            chunk_index=2,
+            doc_id="PAY-005",
+            normalised_rerank_score=0.76,
+        ),
+    ]
+
+    grade = grade_evidence(
+        "Can I pay with cryptocurrency?",
+        chunks,
+        use_llm=True,
+        chain=StrictOverviewJudge(),
+    )
+
+    assert grade.sufficient is False
+    assert grade.signals["policy_overview_match"] is False
+
+
+def test_rewriter_drops_generic_missing_information(monkeypatch):
+    from src.self_healing import query_rewriter as rewriter
+
+    seen = {}
+
+    def fake_rewrite_query(question, **kwargs):
+        seen["question"] = question
+        return ["return policy"]
+
+    monkeypatch.setattr(rewriter, "rewrite_query", fake_rewrite_query)
+
+    rewriter.rewrite_once(
+        "What is the return policy?",
+        missing_information=[
+            "grader judged the passages incomplete",
+            "return shipping costs",
+        ],
+    )
+
+    assert seen["question"] == "What is the return policy? return shipping costs"
+
+
 def test_identifier_match_respects_word_boundaries():
     """A longer identifier must not satisfy a shorter one."""
     from src.self_healing.evidence_grader import deterministic_signals
