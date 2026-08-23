@@ -10,8 +10,10 @@ missing.
 
 from __future__ import annotations
 
+import sys
 import threading
 import time
+import types
 
 import pytest
 from fastapi.testclient import TestClient
@@ -52,12 +54,24 @@ class CountingModel:
 
 
 @pytest.fixture
-def counting_model(monkeypatch):
+def fake_sentence_transformers(monkeypatch):
+    """Provide the patched dependency without installing the model stack.
+
+    The fast CI tier intentionally omits Torch and sentence-transformers. The
+    loader imports SentenceTransformer lazily, so these tests can exercise its
+    singleton and failure behavior with a lightweight module substitute.
+    """
+    module = types.ModuleType("sentence_transformers")
+    monkeypatch.setitem(sys.modules, "sentence_transformers", module)
+    return module
+
+
+@pytest.fixture
+def counting_model(fake_sentence_transformers):
     CountingModel.instances = 0
     CountingModel.delay = 0.0
-    import sentence_transformers
 
-    monkeypatch.setattr(sentence_transformers, "SentenceTransformer", CountingModel)
+    fake_sentence_transformers.SentenceTransformer = CountingModel
     return CountingModel
 
 
@@ -119,13 +133,14 @@ def test_probe_is_true_after_warmup(clean_model_cache, counting_model):
 # --------------------------------------------------------------------------
 
 
-def test_warmup_reports_failure_without_raising(clean_model_cache, monkeypatch):
-    import sentence_transformers
+def test_warmup_reports_failure_without_raising(
+    clean_model_cache, monkeypatch, fake_sentence_transformers
+):
 
     def explode(*args, **kwargs):
         raise OSError("connection reset while downloading")
 
-    monkeypatch.setattr(sentence_transformers, "SentenceTransformer", explode)
+    fake_sentence_transformers.SentenceTransformer = explode
 
     assert embeddings.warmup_embedding_model() is False
     assert embeddings.is_model_loaded() is False
@@ -133,15 +148,14 @@ def test_warmup_reports_failure_without_raising(clean_model_cache, monkeypatch):
 
 
 def test_direct_access_still_raises_for_callers_that_can_handle_it(
-    clean_model_cache, monkeypatch
+    clean_model_cache, monkeypatch, fake_sentence_transformers
 ):
     """`warmup` swallows; `get_embedding_model` must not."""
-    import sentence_transformers
 
     def explode(*args, **kwargs):
         raise OSError("no space left on device")
 
-    monkeypatch.setattr(sentence_transformers, "SentenceTransformer", explode)
+    fake_sentence_transformers.SentenceTransformer = explode
 
     with pytest.raises(OSError):
         embeddings.get_embedding_model()
