@@ -14,9 +14,9 @@ about refund *windows* scoring well against a question about refund *methods*.
 Neither is trusted alone. A high reranker score means "the retriever liked
 this", not "this answers the question", and a model saying "sufficient" is a
 claim, not a measurement. The decision requires both to agree, so the system
-fails closed. When no model is reachable the deterministic gate decides on its
-own and the grade records `deterministic_only=True`, because a silent downgrade
-would make an offline run look like a graded one.
+fails closed. When the model grader is unavailable or malformed, the request
+is not eligible for answer generation; a deterministic score is not a semantic
+grounding decision.
 
 Thresholds come from settings and are specification defaults. They are not
 truth: they are one half of a two-part decision.
@@ -218,6 +218,9 @@ def _deterministic_verdict(signals: dict[str, Any]) -> tuple[bool, str]:
     if signals["chunk_count"] == 0:
         return False, "no passages retrieved"
 
+    if signals["scored_chunk_count"] == 0:
+        return False, "reranker confidence unavailable"
+
     # An exact policy-ID hit is decisive on its own: the customer named the
     # document and the retriever returned it.
     if signals["policy_id_exact_match"]:
@@ -234,10 +237,6 @@ def _deterministic_verdict(signals: dict[str, Any]) -> tuple[bool, str]:
             f"{signals['chunk_count']} passage(s), "
             f"below minimum {settings.evidence_min_relevant_chunks}"
         )
-
-    if signals["scored_chunk_count"] == 0:
-        # Unreranked candidates carry no confidence signal to threshold.
-        return True, "passages present but unscored; reranker did not run"
 
     if signals["top_score"] < settings.evidence_top_score_threshold:
         return False, (
@@ -303,10 +302,10 @@ def grade_evidence(
     if not use_llm and chain is None:
         return EvidenceGrade(
             relevant=deterministic_ok,
-            sufficient=deterministic_ok,
-            confidence=float(signals["top_score"]),
-            missing_information=[] if deterministic_ok else [deterministic_reason],
-            rationale=f"deterministic only: {deterministic_reason}",
+            sufficient=False,
+            confidence=0.0,
+            missing_information=["semantic evidence grading is required"],
+            rationale="semantic evidence grading is required",
             signals=signals,
             deterministic_only=True,
         )
@@ -315,24 +314,25 @@ def grade_evidence(
         chain = chain if chain is not None else _build_grader_chain()
         raw = chain.invoke({"question": query, "context": _format_passages(chunks)})
     except Exception as exc:  # noqa: BLE001 - grading must never break the graph
-        logger.warning("Evidence grader unavailable (%s); using deterministic signals", exc)
+        logger.warning("Evidence grader unavailable; refusing to answer (%s)", exc)
         return EvidenceGrade(
             relevant=deterministic_ok,
-            sufficient=deterministic_ok,
-            confidence=float(signals["top_score"]),
-            missing_information=[] if deterministic_ok else [deterministic_reason],
-            rationale=f"grader unavailable, deterministic only: {deterministic_reason}",
+            sufficient=False,
+            confidence=0.0,
+            missing_information=["semantic evidence grader unavailable"],
+            rationale="semantic evidence grader unavailable",
             signals=signals,
             deterministic_only=True,
         )
 
     if not isinstance(raw, dict):
-        logger.warning("Evidence grader returned %s; using deterministic signals", type(raw))
+        logger.warning("Evidence grader returned unusable output; refusing to answer")
         return EvidenceGrade(
             relevant=deterministic_ok,
-            sufficient=deterministic_ok,
-            confidence=float(signals["top_score"]),
-            rationale=f"grader output unusable, deterministic only: {deterministic_reason}",
+            sufficient=False,
+            confidence=0.0,
+            missing_information=["semantic evidence grader returned invalid output"],
+            rationale="semantic evidence grader returned invalid output",
             signals=signals,
             deterministic_only=True,
         )
@@ -340,31 +340,16 @@ def grade_evidence(
     graded = EvidenceGrade.model_validate({**raw, "signals": signals})
 
     confident_enough = graded.confidence >= settings.evidence_confidence_threshold
-    overview_ok = bool(
-        signals["policy_overview_match"]
-        and graded.relevant
-        and signals["policy_overview_chunk_count"] >= settings.evidence_min_relevant_chunks
-        and signals["top_score"] >= settings.evidence_top_score_threshold
-    )
     model_sufficient = bool(graded.sufficient)
     # Both signals must agree. Either one alone can be wrong in a way the
     # other catches, so the conjunction is the point, not a formality. The
-    # narrow overview path repairs broad policy-summary questions without
-    # changing the rules for specific facts or unsupported topics.
-    sufficient = bool(
-        deterministic_ok
-        and ((model_sufficient and confident_enough) or overview_ok)
-    )
+    sufficient = bool(deterministic_ok and model_sufficient and confident_enough)
 
     if sufficient:
         graded.missing_information = []
     elif not graded.missing_information:
         graded.missing_information = [deterministic_reason if not deterministic_ok else
                                       "grader judged the passages incomplete"]
-
-    if overview_ok and not model_sufficient:
-        graded.confidence = max(graded.confidence, float(signals["top_score"]))
-        graded.rationale = "broad policy overview supported by retrieved policy passages"
 
     graded.sufficient = sufficient
     graded.relevant = bool(graded.relevant or signals["policy_id_exact_match"])

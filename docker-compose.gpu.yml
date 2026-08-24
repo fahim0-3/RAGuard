@@ -1,0 +1,24 @@
+# Optional local GPU override for the cross-encoder benchmark and service.
+#
+# Use only on a Docker Desktop + WSL2 host where `docker run --gpus all ...`
+# succeeds. Embeddings deliberately remain on CPU: an RTX 3050 with 4 GB VRAM
+# is better used by the 568 M parameter reranker alone than by both models.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml \
+#     --profile full up -d --build api
+#
+# Verify before sending queries:
+#   docker compose exec api python -c "import torch; print(torch.cuda.is_available())"
+
+services:
+  api:
+    environment:
+      MODEL_DEVICE: cpu
+      RERANKER_DEVICE: cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

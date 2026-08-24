@@ -26,19 +26,42 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql://raguard:raguard@db:5432/raguard
       LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       MODEL_DEVICE: cpu
+      RERANKER_DEVICE: ${RERANKER_DEVICE:-cpu}
       HF_HOME: /models
       # The browser talks to Streamlit's origin, so the API must allow it.
       CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:8501,http://127.0.0.1:8501}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+      QUERY_MAX_CONCURRENCY: ${QUERY_MAX_CONCURRENCY:-4}
+      QUERY_RATE_LIMIT_PER_MINUTE: ${QUERY_RATE_LIMIT_PER_MINUTE:-30}
+      ADMISSION_BACKEND: redis
+      ADMISSION_REDIS_URL: redis://redis:6379/0
+      ADMISSION_REDIS_NAMESPACE: ${ADMISSION_REDIS_NAMESPACE:-raguard:admission}
+      ADMISSION_LEASE_SECONDS: ${ADMISSION_LEASE_SECONDS:-300}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-raguard-api}
     ports:
       - "8000:8000"
     volumes:
       # Persist Hugging Face weights so the ~2.5 GB download happens once.
       - raguard_models:/models
+    profiles: ["full"]
+
+  redis:
+    image: redis:7-alpine
+    container_name: raguard-redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     profiles: ["full"]
 
   frontend:

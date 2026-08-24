@@ -26,7 +26,7 @@ from typing import Any, Protocol, runtime_checkable
 from src.config import get_settings
 from src.generation.answer_chain import validate_citations
 from src.retrieval.types import RetrievedChunk
-from src.self_healing.citation_verifier import lexical_overlap, verify_citations
+from src.self_healing.citation_verifier import verify_citations
 from src.self_healing.claims import Claim, extract_claims
 from src.self_healing.entailment import judge_claim
 from src.self_healing.state import VerificationResult
@@ -48,7 +48,11 @@ class Verifier(Protocol):
     name: str
 
     def verify(
-        self, answer: str, citations: list[str], chunks: list[RetrievedChunk]
+        self,
+        answer: str,
+        citations: list[str],
+        chunks: list[RetrievedChunk],
+        claim_citations: list[dict[str, Any]] | None = None,
     ) -> VerificationResult:
         """Decide whether `answer` is supported by the cited `chunks`."""
         ...
@@ -70,7 +74,11 @@ class DeterministicVerifier:
         self.use_llm = use_llm
 
     def verify(
-        self, answer: str, citations: list[str], chunks: list[RetrievedChunk]
+        self,
+        answer: str,
+        citations: list[str],
+        chunks: list[RetrievedChunk],
+        claim_citations: list[dict[str, Any]] | None = None,
     ) -> VerificationResult:
         if not answer.strip():
             return VerificationResult(
@@ -80,7 +88,13 @@ class DeterministicVerifier:
                 reason="no answer text to verify",
             )
 
-        report = verify_citations(answer, citations, chunks, use_llm=self.use_llm)
+        report = verify_citations(
+            answer,
+            citations,
+            chunks,
+            use_llm=self.use_llm,
+            claim_citations=claim_citations,
+        )
 
         reason = "all claims supported by cited passages"
         if report.invalid_labels:
@@ -132,17 +146,10 @@ class EntailmentVerifier:
         self,
         chain: Any | None = None,
         use_llm: bool | None = None,
-        lexical_threshold: float | None = None,
     ) -> None:
         settings = get_settings()
         self.chain = chain
         self.use_llm = settings.graph_use_llm if use_llm is None else use_llm
-        # Used only when the judge is unreachable, as the Phase F fallback.
-        self.lexical_threshold = (
-            settings.citation_support_threshold
-            if lexical_threshold is None
-            else lexical_threshold
-        )
 
     # -- gates -------------------------------------------------------------
 
@@ -179,18 +186,20 @@ class EntailmentVerifier:
         haystack = passages.upper().replace(",", "")
         return [t for t in claim.required_tokens if not self._token_present(t, haystack)]
 
-    def _lexically_certain(self, claim_text: str, passages: str) -> bool:
-        """Near-verbatim restatement, safe to accept without the judge."""
-        return lexical_overlap(claim_text, passages) >= self.LEXICAL_ACCEPT_THRESHOLD
-
-    def _lexical_fallback(self, claim_text: str, passages: str) -> bool:
-        """Phase F verdict, used only when no judge could be reached."""
-        return lexical_overlap(claim_text, passages) >= self.lexical_threshold
+    def _verbatim_supported(self, claim_text: str, passages: str) -> bool:
+        """Accept only a literal normalized claim without an entailment judge."""
+        claim_normalised = " ".join(claim_text.lower().split())
+        passages_normalised = " ".join(passages.lower().split())
+        return claim_normalised in passages_normalised
 
     # -- protocol ----------------------------------------------------------
 
     def verify(
-        self, answer: str, citations: list[str], chunks: list[RetrievedChunk]
+        self,
+        answer: str,
+        citations: list[str],
+        chunks: list[RetrievedChunk],
+        claim_citations: list[dict[str, Any]] | None = None,
     ) -> VerificationResult:
         started = time.perf_counter()
 
@@ -219,7 +228,11 @@ class EntailmentVerifier:
             )
 
         # 2. Claim extraction.
-        claims = extract_claims(answer, [c.citation_label for c in resolved])
+        claims = extract_claims(
+            answer,
+            [c.citation_label for c in resolved],
+            claim_citations,
+        )
         if not claims:
             return VerificationResult(
                 supported=False,
@@ -262,8 +275,9 @@ class EntailmentVerifier:
                 )
                 continue
 
-            # Near-verbatim claims skip the judge; everything else is judged.
-            supported = self._lexically_certain(claim.claim_text, passages)
+            # A literal normalized restatement is safe; all other claims need
+            # a semantic judge. Do not silently downgrade to lexical overlap.
+            supported = self._verbatim_supported(claim.claim_text, passages)
             method = "lexical-verbatim"
             confidence = 1.0 if supported else 0.0
             reason = "claim restates the cited passage almost verbatim"
@@ -277,13 +291,13 @@ class EntailmentVerifier:
                     confidence = verdict.confidence
                     reason = verdict.reason or "judged by entailment"
                 else:
-                    method = "lexical-fallback"
-                    supported = self._lexical_fallback(claim.claim_text, passages)
-                    reason = "entailment judge unavailable; lexical verdict kept"
+                    method = "entailment-unavailable"
+                    supported = False
+                    reason = "entailment judge unavailable"
             elif not supported:
-                method = "lexical-only"
-                supported = self._lexical_fallback(claim.claim_text, passages)
-                reason = "entailment disabled; lexical verdict kept"
+                method = "entailment-required"
+                supported = False
+                reason = "entailment verification is required"
 
             if not supported:
                 unsupported.append(claim.claim_text)

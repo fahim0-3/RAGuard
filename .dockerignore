@@ -1,0 +1,27 @@
+# Never send workstation/editor state or secret material to a Docker builder.
+.git/
+.github/
+.env
+.env.*
+.venv/
+venv/
+env/
+.cache/
+.codespaces/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+.eggs/
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+clcs
+diff_review.txt

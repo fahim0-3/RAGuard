@@ -35,6 +35,42 @@ REQUEST_TIMEOUT = float(os.getenv("API_TIMEOUT_S", "180"))
 
 st.set_page_config(page_title="RAGuard", page_icon="🛡️", layout="wide")
 
+st.markdown(
+    """
+    <style>
+      .stApp { background: #f7f8f6; }
+      [data-testid="stSidebar"] { background: #173a3a; }
+      [data-testid="stSidebar"] * { color: #f4f7f4; }
+      [data-testid="stSidebar"] [data-baseweb="input"] * { color: #1d2524; }
+      h1, h2, h3 { color: #1b2927; }
+      [data-testid="stMetric"] {
+        background: #ffffff;
+        border: 1px solid #dbe3df;
+        border-radius: 6px;
+        padding: 0.65rem 0.8rem;
+      }
+      .raguard-kicker {
+        color: #167a6e;
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        margin-bottom: 0.25rem;
+      }
+      .raguard-subtitle { color: #526460; margin-bottom: 1.25rem; }
+      .stButton > button[kind="primary"] {
+        background: #167a6e;
+        border-color: #167a6e;
+      }
+      .stButton > button[kind="primary"]:hover {
+        background: #0f635a;
+        border-color: #0f635a;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 EXAMPLES = [
     "How long does a refund take to reach my credit card?",
     "What does error PAY-402 mean at checkout?",
@@ -55,7 +91,9 @@ MAX_QUESTION_CHARS = 2000
 #: user typed.
 QUESTION_KEY = "question_text"
 EXAMPLE_KEY = "example_choice"
+RECENT_KEY = "recent_questions"
 NO_EXAMPLE = "(type your own)"
+MAX_RECENT_QUESTIONS = 5
 
 
 def check_readiness(base_url: str) -> tuple[bool, str]:
@@ -167,12 +205,18 @@ with st.sidebar:
 # Main panel
 # --------------------------------------------------------------------------
 
-st.header("Ask the support assistant")
+st.markdown('<div class="raguard-kicker">Customer support policy desk</div>', unsafe_allow_html=True)
+st.title("RAGuard")
+st.markdown(
+    '<div class="raguard-subtitle">Ask a policy question, review the cited evidence, and see the verified outcome.</div>',
+    unsafe_allow_html=True,
+)
 
 # The question lives in session state, and the text area is bound to it by key
 # with no `value=`. Passing `value=` recomputed from the example selector is
 # what previously discarded typed text whenever the selector changed.
 st.session_state.setdefault(QUESTION_KEY, "")
+st.session_state.setdefault(RECENT_KEY, [])
 
 
 def _clear_view() -> None:
@@ -191,59 +235,105 @@ def _apply_example() -> None:
     _clear_view()
 
 
-st.selectbox(
-    "Example questions",
-    [NO_EXAMPLE, *EXAMPLES],
-    key=EXAMPLE_KEY,
-    on_change=_apply_example,
-    help="A starting point. The question below stays fully editable.",
-)
-st.text_area(
-    "Question",
-    key=QUESTION_KEY,
-    height=90,
-    placeholder="Ask anything about refunds, returns, delivery, damage, or payments…",
-)
+def _clear_question() -> None:
+    """Reset the composer without discarding the user's session history."""
+    st.session_state[QUESTION_KEY] = ""
+    st.session_state[EXAMPLE_KEY] = NO_EXAMPLE
+    _clear_view()
 
-# Never disabled. `st.text_area` does not rerun the script on keystrokes, so a
-# `disabled=not question` button is still disabled at the moment the user
-# clicks it after typing — which is what made custom questions unsubmittable.
-# Validation happens on submit instead, against the same bounds as the API.
-if st.button("Ask", type="primary"):
-    question = (st.session_state.get(QUESTION_KEY) or "").strip()
 
-    if len(question) < MIN_QUESTION_CHARS:
-        st.session_state["view"] = present(
-            {
-                "error": "invalid_question",
-                "detail": (
-                    f"Please enter a question of at least {MIN_QUESTION_CHARS} "
-                    "characters."
-                ),
-            }
-        )
-    elif len(question) > MAX_QUESTION_CHARS:
-        st.session_state["view"] = present(
-            {
-                "error": "invalid_question",
-                "detail": (
-                    f"That question is {len(question)} characters; the limit is "
-                    f"{MAX_QUESTION_CHARS}."
-                ),
-            }
-        )
-    else:
-        # Check readiness first so a query is never parked inside a model
-        # download. This is also what makes the spinner text below truthful.
-        with st.spinner("Checking service readiness…"):
-            ready, reason = check_readiness(api_url)
+def _remember_question(question: str) -> None:
+    """Keep a small, local-only history of submitted questions."""
+    history = [item for item in st.session_state.get(RECENT_KEY, []) if item != question]
+    st.session_state[RECENT_KEY] = [question, *history][:MAX_RECENT_QUESTIONS]
 
-        if not ready:
-            st.session_state["view"] = present({"error": "not_ready", "detail": reason})
+
+def _reuse_question(question: str) -> None:
+    """Put a session question back in the editable composer."""
+    st.session_state[QUESTION_KEY] = question
+    st.session_state[EXAMPLE_KEY] = NO_EXAMPLE
+    _clear_view()
+
+
+composer, session_panel = st.columns([3, 2], gap="large")
+
+with composer:
+    st.subheader("Ask a policy question")
+    st.selectbox(
+        "Example questions",
+        [NO_EXAMPLE, *EXAMPLES],
+        key=EXAMPLE_KEY,
+        on_change=_apply_example,
+        help="Optional starting points. The question below stays fully editable.",
+    )
+    st.text_area(
+        "Question",
+        key=QUESTION_KEY,
+        height=130,
+        placeholder="Ask anything about refunds, returns, delivery, damage, or payments…",
+    )
+
+    submit_column, clear_column, _ = st.columns([1, 1, 5])
+    with submit_column:
+        # Never disabled. `st.text_area` does not rerun the script on
+        # keystrokes, so a `disabled=not question` button is still disabled at
+        # the moment the user clicks it after typing. Validation happens on
+        # submit instead, against the same bounds as the API.
+        ask_clicked = st.button("Ask", type="primary", use_container_width=True)
+    with clear_column:
+        st.button("Clear", on_click=_clear_question, use_container_width=True)
+
+    if ask_clicked:
+        question = (st.session_state.get(QUESTION_KEY) or "").strip()
+
+        if len(question) < MIN_QUESTION_CHARS:
+            st.session_state["view"] = present(
+                {
+                    "error": "invalid_question",
+                    "detail": (
+                        f"Please enter a question of at least {MIN_QUESTION_CHARS} "
+                        "characters."
+                    ),
+                }
+            )
+        elif len(question) > MAX_QUESTION_CHARS:
+            st.session_state["view"] = present(
+                {
+                    "error": "invalid_question",
+                    "detail": (
+                        f"That question is {len(question)} characters; the limit is "
+                        f"{MAX_QUESTION_CHARS}."
+                    ),
+                }
+            )
         else:
-            with st.spinner("Processing your question…"):
-                payload = call_api(api_url, question)
-            st.session_state["view"] = present(payload)
+            _remember_question(question)
+            # Check readiness first so a query is never parked inside a model
+            # download. This is also what makes the spinner text below truthful.
+            with st.spinner("Checking service readiness…"):
+                ready, reason = check_readiness(api_url)
+
+            if not ready:
+                st.session_state["view"] = present({"error": "not_ready", "detail": reason})
+            else:
+                with st.spinner("Processing your question…"):
+                    payload = call_api(api_url, question)
+                st.session_state["view"] = present(payload)
+
+with session_panel:
+    st.subheader("This session")
+    history = st.session_state.get(RECENT_KEY, [])
+    if history:
+        for index, item in enumerate(history):
+            st.button(
+                item,
+                key=f"recent_question_{index}",
+                on_click=_reuse_question,
+                args=(item,),
+                use_container_width=True,
+            )
+    else:
+        st.caption("Your submitted questions will appear here.")
 
 view = st.session_state.get("view")
 
@@ -258,46 +348,47 @@ else:
     }[view.kind]
     render(f"**{view.heading}** — {view.explanation}")
 
-    if view.body:
-        st.markdown(view.body)
-
     if view.is_error:
+        if view.body:
+            st.markdown(view.body)
         st.stop()
 
-    columns = st.columns(len(view.metrics))
-    for column, (label, value) in zip(columns, view.metrics.items(), strict=True):
-        column.metric(label, value)
+    answer_tab, evidence_tab, trace_tab = st.tabs(["Answer", "Evidence", "Decision trace"])
+    with answer_tab:
+        if view.body:
+            st.markdown(view.body)
 
-    st.caption(view.verification)
-    if view.failure_reason:
-        st.caption(f"Reason: {view.failure_reason}")
+        columns = st.columns(len(view.metrics))
+        for column, (label, value) in zip(columns, view.metrics.items(), strict=True):
+            column.metric(label, value)
 
-    # -- Citations, exactly as validated server-side --------------------
-    if view.citations:
-        st.subheader("Citations")
-        for citation in view.citations:
-            header = f"{citation['policy_id']} · {citation['label']}"
-            with st.expander(header):
-                st.caption(
-                    f"source: {citation['source']} · chunk_index: {citation['chunk_index']} "
-                    f"· chunk_id: {citation['chunk_id']}"
-                )
-                st.write(citation["excerpt"])
-    elif view.outcome == "answer":
-        st.warning("This answer carries no citations, which should not happen.")
+        st.caption(view.verification)
+        if view.failure_reason:
+            st.caption(f"Reason: {view.failure_reason}")
 
-    # -- Self-healing surface --------------------------------------------
-    if view.rewritten_queries:
-        st.subheader("Query rewrites tried")
-        for index, rewritten in enumerate(view.rewritten_queries, start=1):
-            st.code(f"{index}. {rewritten}", language=None)
+    with evidence_tab:
+        # Citation metadata is exactly as validated server-side.
+        if view.citations:
+            for citation in view.citations:
+                header = f"{citation['policy_id']} · {citation['label']}"
+                with st.expander(header):
+                    st.caption(
+                        f"source: {citation['source']} · chunk_index: {citation['chunk_index']} "
+                        f"· chunk_id: {citation['chunk_id']}"
+                    )
+                    st.write(citation["excerpt"])
+        elif view.outcome == "answer":
+            st.warning("This answer carries no citations, which should not happen.")
+        else:
+            st.caption("No policy passage was cited for this outcome.")
 
-    # -- Decision path (operational state only, never reasoning) ----------
-    if view.trace:
-        st.subheader("Decision path")
-        st.markdown(
-            "  \n".join(f"{row['step']}. {row['label']}" for row in view.trace)
-        )
+    with trace_tab:
+        if view.rewritten_queries:
+            st.subheader("Query rewrites tried")
+            for index, rewritten in enumerate(view.rewritten_queries, start=1):
+                st.code(f"{index}. {rewritten}", language=None)
 
-    if view.request_id:
-        st.caption(f"request_id: {view.request_id}")
+        if view.trace:
+            st.markdown("  \n".join(f"{row['step']}. {row['label']}" for row in view.trace))
+        if view.request_id:
+            st.caption(f"request_id: {view.request_id}")

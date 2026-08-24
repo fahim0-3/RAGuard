@@ -209,6 +209,8 @@ class GraphState(TypedDict, total=False):
     # Generation
     answer_draft: str
     citations: list[str]
+    #: Exact per-sentence citation mapping built by grounded generation.
+    claim_citations: list[dict[str, Any]]
     answer_confidence: float
     #: Phase E outcome string, used to distinguish a provider outage from an
     #: honest "the evidence does not cover this".
@@ -255,6 +257,7 @@ def initial_state(
         max_regenerations=max_regenerations,
         answer_draft="",
         citations=[],
+        claim_citations=[],
         answer_confidence=0.0,
         generation_outcome="",
         verification_result={},

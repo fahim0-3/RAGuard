@@ -351,14 +351,22 @@ def test_answer_with_no_citation_at_all_is_unsupported(evidence):
 
 def test_one_supported_and_one_invented_claim_fails_the_answer(evidence):
     """The example from the specification: partial grounding is not grounding."""
+
+    class PartialJudge:
+        def invoke(self, payload: dict):
+            supported = payload["claim"].startswith("Refunds take")
+            return {
+                "supported": supported,
+                "confidence": 0.9 if supported else 0.1,
+                "reason": "stated" if supported else "not stated",
+            }
+
     answer = (
         "Refunds take 5 to 7 business days. "
         "Your refund will definitely arrive tomorrow morning."
     )
 
-    result = verifier(StubJudge(supported=False, reason="not stated")).verify(
-        answer, [REFUND_LABEL], evidence
-    )
+    result = verifier(PartialJudge()).verify(answer, [REFUND_LABEL], evidence)
 
     assert result.supported is False
     assert result.claim_count == 2
@@ -613,6 +621,7 @@ def graph_world(monkeypatch, evidence):
             self.citation_ids = citations
             self.confidence = 0.9
             self.failure_reason = None
+            self.claim_citations = [{"claim": answer, "citations": list(self.citation_ids)}]
 
     monkeypatch.setattr("src.retrieval.hybrid.get_hybrid_retriever", lambda: StubRetriever())
     monkeypatch.setattr("src.reranking.get_reranker", lambda: StubReranker())

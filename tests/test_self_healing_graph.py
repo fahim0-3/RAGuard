@@ -86,6 +86,11 @@ class StubAnswer:
         self.citation_ids = citations if citations is not None else ["refund_policy.txt#1"]
         self.confidence = confidence
         self.failure_reason = failure_reason
+        self.claim_citations = (
+            [{"claim": answer, "citations": list(self.citation_ids)}]
+            if outcome == "answered" and answer
+            else []
+        )
 
 
 class StubVerifier:
@@ -95,7 +100,7 @@ class StubVerifier:
         self.supported = supported
         self.calls = 0
 
-    def verify(self, answer, citations, chunks):
+    def verify(self, answer, citations, chunks, claim_citations=None):
         self.calls += 1
         return VerificationResult(
             supported=self.supported,
@@ -593,7 +598,7 @@ def test_retrieval_outage_abstains_without_crashing(world, monkeypatch):
     result = run(world)
 
     assert result["final_outcome"] == "abstain"
-    assert "pgvector unreachable" in result["failure_reason"]
+    assert result["failure_reason"] == "retrieval_failed"
 
 
 def test_empty_retrieval_abstains(world):
@@ -850,22 +855,21 @@ def test_grader_identifier_pattern_matches_phase_g():
         assert policy_ids_in(question) == claims_ids(question), question
 
 
-def test_error_code_inside_its_document_is_sufficient():
-    """GC-003: PAY-402 is documented inside PAY-005, not as its own document."""
+def test_error_code_requires_semantic_grading_before_it_is_sufficient():
+    """An identifier match alone cannot replace semantic evidence grading."""
     from src.self_healing.evidence_grader import grade_evidence
 
     chunks = [_chunk(PAY_405_TABLE), _chunk("Support agents should ask for the code.", index=0)]
 
     grade = grade_evidence("What does error PAY-402 mean at checkout?", chunks, use_llm=False)
 
-    assert grade.sufficient is True
+    assert grade.sufficient is False
     assert grade.signals["matched_policy_ids"] == ["PAY-402"]
     # It matched as evidence text, not as a document ID.
     assert grade.signals["matched_document_ids"] == []
 
 
-def test_reason_code_inside_its_document_is_sufficient():
-    """GC-029: RF-101 is a refund reason code inside REF-001."""
+def test_reason_code_requires_semantic_grading_before_it_is_sufficient():
     from src.self_healing.evidence_grader import grade_evidence
 
     chunks = [
@@ -878,7 +882,7 @@ def test_reason_code_inside_its_document_is_sufficient():
 
     grade = grade_evidence("What does reason code RF-101 mean?", chunks, use_llm=False)
 
-    assert grade.sufficient is True
+    assert grade.sufficient is False
 
 
 def test_absent_identifier_is_still_insufficient():
@@ -906,15 +910,14 @@ def test_identifier_elsewhere_in_the_corpus_does_not_count():
     assert grade.signals["matched_policy_ids"] == []
 
 
-def test_real_document_id_still_matches_as_a_document():
-    """The original policy-ID signal is extended, not replaced."""
+def test_document_id_match_is_a_signal_not_a_semantic_verdict():
     from src.self_healing.evidence_grader import grade_evidence
 
     chunks = [_chunk("Payment Failure FAQ content."), _chunk("More content.", index=0)]
 
     grade = grade_evidence("What does PAY-005 cover?", chunks, use_llm=False)
 
-    assert grade.sufficient is True
+    assert grade.sufficient is False
     assert grade.signals["matched_document_ids"] == ["PAY-005"]
 
 
@@ -929,8 +932,8 @@ class StrictOverviewJudge:
         }
 
 
-def test_broad_policy_overview_can_pass_an_overstrict_judge():
-    """A policy overview asks for a useful summary, not the whole document."""
+def test_broad_policy_overview_does_not_override_a_negative_judge():
+    """A broad overview still needs a confident positive semantic verdict."""
     from src.self_healing.evidence_grader import grade_evidence
 
     chunks = [
@@ -959,8 +962,8 @@ def test_broad_policy_overview_can_pass_an_overstrict_judge():
         chain=StrictOverviewJudge(),
     )
 
-    assert grade.sufficient is True
-    assert grade.missing_information == []
+    assert grade.sufficient is False
+    assert grade.missing_information
     assert grade.signals["policy_overview_match"] is True
 
 

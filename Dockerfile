@@ -19,6 +19,7 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 COPY src/ ./src/
 COPY api/ ./api/
 COPY data/ ./data/
+COPY scripts/ ./scripts/
 COPY pyproject.toml ./
 
 EXPOSE 8000

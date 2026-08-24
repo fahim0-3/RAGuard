@@ -188,11 +188,13 @@ def hybrid_retrieve(state: GraphState) -> dict[str, Any]:
     query = state.get("current_query") or state.get("original_query", "")
     try:
         chunks = get_hybrid_retriever().retrieve(query)
-    except Exception as exc:  # noqa: BLE001 - retrieval outage must not crash the graph
+    except Exception:  # noqa: BLE001 - retrieval outage must not crash the graph
         logger.exception("Retrieval failed")
         return {
             "retrieved_chunks": [],
-            "failure_reason": f"retrieval_failed: {type(exc).__name__}: {exc}",
+            # The exception is in the log only. Graph state can be projected to
+            # an HTTP response, so it carries a controlled operational code.
+            "failure_reason": "retrieval_failed",
             "timestamps": _stamp(state, "retrieved_at"),
             "node_sequence": [NODE_RETRIEVE],
         }
@@ -274,8 +276,15 @@ def generate_answer(state: GraphState) -> dict[str, Any]:
     return {
         "answer_draft": response.answer,
         "citations": response.citation_ids,
+        "claim_citations": [
+            claim.model_dump() if hasattr(claim, "model_dump") else dict(claim)
+            for claim in response.claim_citations
+        ],
         "answer_confidence": response.confidence,
-        "failure_reason": response.failure_reason or "",
+        # Generation failures use controlled outcome codes. The detailed
+        # provider exception is logged inside generation and never reaches
+        # graph state that can be projected to an API response.
+        "failure_reason": "" if response.outcome == "answered" else response.outcome,
         "generation_outcome": response.outcome,
         "timestamps": _stamp(state, "generated_at"),
         "node_sequence": [NODE_GENERATE],
@@ -290,6 +299,7 @@ def make_verify_node(verifier: Verifier):
             state.get("answer_draft", ""),
             list(state.get("citations") or []),
             list(state.get("retrieved_chunks") or []),
+            list(state.get("claim_citations") or []),
         )
         return {
             "verification_result": result.model_dump(),
@@ -339,7 +349,7 @@ def abstain(state: GraphState) -> dict[str, Any]:
 
     if verification.checked and not verification.supported:
         reason = "unverified_citations"
-    elif existing.startswith("retrieval_failed") or state.get("generation_outcome") in {
+    elif existing == "retrieval_failed" or state.get("generation_outcome") in {
         "provider_error",
         "invalid_output",
     }:

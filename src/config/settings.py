@@ -41,12 +41,11 @@ class Settings(BaseSettings):
     # model with a 5 requests/minute free-tier quota, which the retry loop and
     # the per-claim judge exhaust immediately.
     gemini_model: str = "gemini-3.1-flash-lite"
-    # Deliberately a different model from the generator. A judge that shares the
-    # generator's weights tends to share its blind spots, and citation
-    # verification is the one place where an independent opinion is the product.
-    # Benchmarked 5/5 on evidence grading and entailment, including the
-    # business-days versus calendar-days distinction.
-    gemini_judge_model: str = "gemini-flash-lite-latest"
+    # Deliberately a different, stable model from the generator. A floating
+    # `-latest` alias makes a regression report change without a code or config
+    # change, which defeats reproducible evaluation. Rebaseline deliberately
+    # whenever this explicit model ID changes.
+    gemini_judge_model: str = "gemini-3.5-flash-lite"
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b"
     # Provider-agnostic model override. Empty means "use the provider default",
@@ -64,6 +63,10 @@ class Settings(BaseSettings):
     # against the primary's 568 M, so it stays usable on CPU-only machines.
     reranker_fallback_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     model_device: str = "cpu"
+    # Empty inherits MODEL_DEVICE. Keeping the reranker separate lets an API
+    # process retain embeddings on CPU while benchmarking the cross-encoder on
+    # an available GPU with its own memory budget.
+    reranker_device: str = ""
 
     # --- Ingestion ---
     data_dir: Path = Path("data/policies")
@@ -128,6 +131,25 @@ class Settings(BaseSettings):
     # default covers a local Streamlit; "*" is accepted but must be a
     # deliberate choice, not a default.
     cors_allow_origins: str = "http://localhost:8501,http://127.0.0.1:8501"
+    # Empty disables operational endpoints rather than leaving them public.
+    # Store this outside source control and rotate it like any other secret.
+    admin_api_key: str = Field(default="", repr=False)
+    # Process-local protection for expensive requests. A gateway must enforce
+    # equivalent tenant/IP limits when more than one API instance is deployed.
+    query_max_concurrency: int = Field(default=4, ge=1, le=128)
+    query_rate_limit_per_minute: int = Field(default=30, ge=1, le=10_000)
+    # `redis` makes the guard atomic across API replicas. It fails closed if
+    # Redis is unavailable; `local` is for a one-process development setup.
+    admission_backend: Literal["local", "redis"] = "local"
+    admission_redis_url: str = "redis://localhost:6379/0"
+    admission_redis_namespace: str = "raguard:admission"
+    # Must exceed the longest permitted request so a healthy worker keeps its
+    # concurrency slot; expiry still recovers a slot after a worker crash.
+    admission_lease_seconds: int = Field(default=300, ge=30, le=3_600)
+    # Empty keeps local trace context only. Set a collector endpoint, for
+    # example http://otel-collector:4318/v1/traces, to export OTLP spans.
+    otel_exporter_otlp_endpoint: str = ""
+    otel_service_name: str = "raguard-api"
 
     @property
     def cors_allow_origins_list(self) -> list[str]:
@@ -146,6 +168,11 @@ class Settings(BaseSettings):
     @property
     def reports_dir(self) -> Path:
         return PROJECT_ROOT / "reports"
+
+    @property
+    def resolved_reranker_device(self) -> str:
+        """Configured cross-encoder device, falling back to MODEL_DEVICE."""
+        return self.reranker_device.strip() or self.model_device
 
 
 @lru_cache(maxsize=1)

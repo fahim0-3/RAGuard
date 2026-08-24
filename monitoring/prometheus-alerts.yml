@@ -1,0 +1,26 @@
+groups:
+  - name: raguard-api
+    rules:
+      - alert: RAGuardAdmissionRejectionsHigh
+        expr: sum(rate(raguard_query_admission_rejections_total[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: RAGuard is rejecting more than one query per second.
+
+      - alert: RAGuardWorkflowFailuresHigh
+        expr: sum(rate(raguard_queries_failed_total[5m])) / clamp_min(sum(rate(raguard_queries_admitted_total[5m])), 1) > 0.05
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: More than 5% of admitted RAGuard queries are failing.
+
+      - alert: RAGuardLatencyHigh
+        expr: histogram_quantile(0.95, sum(rate(raguard_query_latency_seconds_bucket[10m])) by (le)) > 5
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: RAGuard p95 completed-query latency exceeds five seconds.

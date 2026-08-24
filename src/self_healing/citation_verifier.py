@@ -33,12 +33,14 @@ from src.generation.prompts import (
 )
 from src.retrieval.bm25 import tokenize
 from src.retrieval.types import RetrievedChunk
+from src.self_healing.claims import extract_claims
 
 logger = logging.getLogger(__name__)
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 # Numbers, percentages, currency amounts, and alphanumeric codes.
 _FACTUAL_TOKEN = re.compile(r"\b(?:[A-Z]{1,5}[-_]?\d{1,5}(?:[-_][A-Z0-9]+)*|\d+(?:\.\d+)?)\b")
+_ACKNOWLEDGEMENT = re.compile(r"^(?:yes|no|ok|okay|thanks|thank you)[.!?]*$", re.IGNORECASE)
 
 
 @dataclass(slots=True)
@@ -87,7 +89,11 @@ class CitationReport:
 
 
 def split_claims(answer: str) -> list[str]:
-    return [s.strip() for s in _SENTENCE_SPLIT.split(answer.strip()) if len(s.strip()) > 15]
+    return [
+        sentence.strip()
+        for sentence in _SENTENCE_SPLIT.split(answer.strip())
+        if sentence.strip() and not _ACKNOWLEDGEMENT.fullmatch(sentence.strip())
+    ]
 
 
 def lexical_overlap(claim: str, passage: str) -> float:
@@ -126,30 +132,56 @@ def verify_citations(
     citations: list[str],
     retrieved: list[RetrievedChunk],
     use_llm: bool = False,
+    claim_citations: list[dict[str, object]] | None = None,
 ) -> CitationReport:
     """Verify that an answer is grounded in the passages it cites."""
     settings = get_settings()
 
     by_label = {chunk.citation_label: chunk for chunk in retrieved}
-    invalid_labels = [label for label in citations if label not in by_label]
-    cited_chunks = [by_label[label] for label in citations if label in by_label]
+    mappings = list(claim_citations or [])
+    all_labels = list(citations)
+    if mappings:
+        all_labels = [
+            label
+            for mapping in mappings
+            for label in mapping.get("citations", [])
+            if isinstance(label, str)
+        ]
+    invalid_labels = [label for label in all_labels if label not in by_label]
+    claims = extract_claims(answer, citations, mappings or None)
 
     if not answer.strip():
         return CitationReport(valid=False, invalid_labels=invalid_labels)
 
-    if not cited_chunks:
+    if not all_labels:
         # An answer with no usable citation is unverifiable by construction.
         return CitationReport(
             valid=False,
             invalid_labels=invalid_labels,
             claim_verdicts=[
-                ClaimVerdict(claim=c, supported=False, overlap=0.0, method="no-citation")
-                for c in split_claims(answer)
+                ClaimVerdict(
+                    claim=c.claim_text,
+                    supported=False,
+                    overlap=0.0,
+                    method="no-citation",
+                )
+                for c in claims
             ],
         )
 
     verdicts: list[ClaimVerdict] = []
-    for claim in split_claims(answer):
+    for claim_model in claims:
+        claim = claim_model.claim_text
+        cited_chunks = [
+            by_label[label]
+            for label in claim_model.citation_labels
+            if label in by_label
+        ]
+        if not cited_chunks:
+            verdicts.append(
+                ClaimVerdict(claim=claim, supported=False, overlap=0.0, method="no-citation")
+            )
+            continue
         best_overlap = 0.0
         best_missing: list[str] = []
         best_passage = ""

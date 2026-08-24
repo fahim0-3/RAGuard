@@ -207,6 +207,35 @@ def test_choosing_type_your_own_clears_the_field(api):
     assert app.session_state["question_text"] == ""
 
 
+def test_clear_resets_the_composer_without_losing_session_history(api):
+    app = run_app()
+    app.text_area(key="question_text").input(CUSTOM).run()
+    app.button[0].click().run()
+
+    clear = next(button for button in app.button if button.label == "Clear")
+    clear.click().run()
+
+    assert app.session_state["question_text"] == ""
+    assert app.session_state["example_choice"] == "(type your own)"
+    assert app.session_state["recent_questions"] == [CUSTOM]
+    assert "view" not in app.session_state
+
+
+def test_recent_question_returns_to_the_editable_composer(api):
+    app = run_app()
+    app.text_area(key="question_text").input(CUSTOM).run()
+    app.button[0].click().run()
+
+    app.text_area(key="question_text").input("A different question").run()
+    history_button = next(
+        button for button in app.button if button.key == "recent_question_0"
+    )
+    history_button.click().run()
+
+    assert app.session_state["question_text"] == CUSTOM
+    assert app.session_state["example_choice"] == "(type your own)"
+
+
 # --------------------------------------------------------------------------
 # Validation is preserved, not removed
 # --------------------------------------------------------------------------

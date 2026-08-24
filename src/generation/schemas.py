@@ -27,6 +27,7 @@ from src.retrieval.types import RetrievedChunk
 __all__ = [
     "AnswerOutcome",
     "AnswerResponse",
+    "ClaimCitation",
     "Citation",
     "RawAnswerPayload",
 ]
@@ -50,13 +51,41 @@ NON_ANSWER_OUTCOMES: frozenset[str] = frozenset(
 )
 
 
+class ClaimCitation(BaseModel):
+    """One answer sentence and the evidence labels that support it.
+
+    The model may name labels but cannot supply any citation metadata. Labels are
+    resolved against supplied chunks before this object reaches a public result.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    claim: str = ""
+    citations: list[str] = Field(default_factory=list)
+
+    @field_validator("claim", mode="before")
+    @classmethod
+    def _clean_claim(cls, value: Any) -> str:
+        return " ".join(str(value or "").split())
+
+    @field_validator("citations", mode="before")
+    @classmethod
+    def _drop_non_strings(cls, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [v for v in value if isinstance(v, str) and v.strip()]
+
+
 class RawAnswerPayload(BaseModel):
     """The model's JSON, validated for shape only. Contents remain untrusted."""
 
     model_config = ConfigDict(extra="ignore")
 
     answer: str = ""
+    # Kept for compatibility with old provider responses, but generation now
+    # requires claim_citations for every answer sentence.
     citations: list[str] = Field(default_factory=list)
+    claim_citations: list[ClaimCitation] = Field(default_factory=list)
     sufficient_context: bool = True
     confidence: float | None = None
 
@@ -112,6 +141,7 @@ class AnswerResponse(BaseModel):
     answer: str = ""
     outcome: AnswerOutcome = "insufficient_evidence"
     citations: list[Citation] = Field(default_factory=list)
+    claim_citations: list[ClaimCitation] = Field(default_factory=list)
     confidence: float = 0.0
     confidence_source: Literal["model", "default"] = "default"
     more_info_required: bool = True

@@ -59,6 +59,12 @@ def make_reranker(model: object, **kwargs) -> CrossEncoderReranker:
     return CrossEncoderReranker(model=model, **kwargs)
 
 
+def test_explicit_reranker_device_overrides_the_shared_model_device():
+    reranker = make_reranker(FakeModel(), device="cuda:0")
+
+    assert reranker.device == "cuda:0"
+
+
 # --------------------------------------------------------------------------
 # Scoring
 # --------------------------------------------------------------------------

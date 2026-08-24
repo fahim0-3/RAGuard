@@ -95,8 +95,15 @@ def client(monkeypatch):
     # says otherwise. Model lifecycle behavior has focused coverage in
     # test_model_readiness.py.
     monkeypatch.setattr("api.main.is_model_loaded", lambda: True)
+    from api.admission import query_admission
+    from api.observability import runtime_metrics
+
+    query_admission.reset()
+    runtime_metrics.reset()
     test_client = TestClient(app, raise_server_exceptions=False)
     yield test_client
+    query_admission.reset()
+    runtime_metrics.reset()
     app.dependency_overrides.clear()
 
 
@@ -274,6 +281,22 @@ def test_query_never_reaches_the_graph_when_invalid(client):
 
     client.post("/query", json={"query": "ab"})
 
+    assert stub.calls == []
+
+
+def test_query_rejects_work_when_the_rate_limit_is_reached(client, monkeypatch):
+    from api.admission import AdmissionLease
+
+    stub = use_graph(StubGraph())
+    monkeypatch.setattr(
+        "api.main.query_admission.acquire",
+        lambda *args, **kwargs: AdmissionLease(reason="rate_limited"),
+    )
+
+    response = client.post("/query", json={"query": "How long do refunds take?"})
+
+    assert response.status_code == 429
+    assert response.json()["error"] == "rate_limited"
     assert stub.calls == []
 
 
@@ -495,6 +518,117 @@ def test_response_schema_is_closed(client):
     assert "secret_internal_field" not in client.post(
         "/query", json={"query": "a question here"}
     ).text
+
+
+def test_graph_failure_reason_is_allow_listed(client):
+    use_graph(
+        StubGraph(
+            graph_state(
+                final_outcome="abstain",
+                failure_reason="postgresql://raguard:secret@db:5432/production",
+            )
+        )
+    )
+
+    body = client.post("/query", json={"query": "a question here"}).json()
+
+    assert body["failure_reason"] == "request_not_completed"
+    assert "secret" not in str(body).lower()
+
+
+# --------------------------------------------------------------------------
+# Operational endpoint protection
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [("post", "/retrieve"), ("post", "/admin/reindex"), ("post", "/admin/warmup"),
+     ("get", "/admin/metrics"), ("get", "/metrics")],
+)
+def test_operational_endpoints_are_disabled_without_an_admin_key(client, method, path):
+    response = (
+        client.post(path, json={"query": "a question here"})
+        if method == "post"
+        else client.get(path)
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"] == "forbidden"
+
+
+def test_operational_endpoints_reject_an_incorrect_admin_key(client):
+    use_settings(admin_api_key="test-admin-key")
+
+    response = client.post(
+        "/retrieve",
+        json={"query": "a question here"},
+        headers={"X-Admin-Key": "wrong-key"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_admin_metrics_expose_aggregates_without_customer_content(client):
+    use_settings(admin_api_key="metrics-key")
+    use_graph(StubGraph())
+
+    assert client.post("/query", json={"query": "How long do refunds take?"}).status_code == 200
+    response = client.get("/admin/metrics", headers={"X-Admin-Key": "metrics-key"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["queries"]["admitted"] == 1
+    assert body["queries"]["completed"] == 1
+    assert body["queries"]["outcomes"] == {"answer": 1}
+    assert body["grounding"]["verification"] == {"supported": 1}
+    assert "refund" not in str(body).lower()
+
+
+def test_admin_metrics_classify_admission_rejections(client, monkeypatch):
+    from api.admission import AdmissionLease
+
+    use_settings(admin_api_key="metrics-key")
+    monkeypatch.setattr(
+        "api.main.query_admission.acquire",
+        lambda *args, **kwargs: AdmissionLease(reason="rate_limited"),
+    )
+
+    assert client.post("/query", json={"query": "How long do refunds take?"}).status_code == 429
+    body = client.get("/admin/metrics", headers={"X-Admin-Key": "metrics-key"}).json()
+
+    assert body["queries"]["admission_rejected"] == 1
+    assert body["queries"]["admission_rejections"] == {"rate_limited": 1}
+
+
+def test_prometheus_metrics_are_scrapeable_and_private(client):
+    use_settings(admin_api_key="metrics-key")
+    use_graph(StubGraph())
+
+    assert client.post("/query", json={"query": "How long do refunds take?"}).status_code == 200
+    response = client.get("/metrics", headers={"X-Admin-Key": "metrics-key"})
+
+    assert response.status_code == 200
+    assert "text/plain" in response.headers["content-type"]
+    assert "raguard_queries_admitted_total 1" in response.text
+    assert 'raguard_query_outcomes_total{outcome="answer"} 1' in response.text
+    assert "raguard_query_latency_seconds_bucket" in response.text
+    assert "refund" not in response.text.lower()
+
+
+def test_trace_context_is_propagated_without_customer_content(client):
+    use_graph(StubGraph())
+    traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+
+    response = client.post(
+        "/query",
+        json={"query": "How long do refunds take?", "request_id": "trace-123"},
+        headers={"traceparent": traceparent},
+    )
+
+    assert response.status_code == 200
+    assert response.headers.get("traceparent", "").startswith("00-0af7651916cd43dd8448eb211c80319c-")
+    assert "How long" not in response.headers.get("traceparent", "")
 
 
 # --------------------------------------------------------------------------

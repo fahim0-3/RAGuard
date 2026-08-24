@@ -66,8 +66,10 @@ _PROCEDURAL_HINT = re.compile(
     re.IGNORECASE,
 )
 
-#: Sentences shorter than this are fragments, not claims.
-MIN_CLAIM_CHARS = 16
+# Acknowledgements do not assert a fact. Everything else, including brief
+# sentences such as "Fees apply.", must be verified rather than disappearing
+# behind an arbitrary character threshold.
+_ACKNOWLEDGEMENT = re.compile(r"^(?:yes|no|ok|okay|thanks|thank you)[.!?]*$", re.IGNORECASE)
 
 
 class Claim(BaseModel):
@@ -138,7 +140,11 @@ def _required_tokens(sentence: str, claim_type: ClaimType) -> list[str]:
     return []
 
 
-def extract_claims(answer: str, citation_labels: list[str] | None = None) -> list[Claim]:
+def extract_claims(
+    answer: str,
+    citation_labels: list[str] | None = None,
+    claim_citations: list[dict[str, Any]] | None = None,
+) -> list[Claim]:
     """Split an answer into typed, citation-bearing claims.
 
     Every claim inherits the answer's citation list. The generator cites for the
@@ -147,6 +153,7 @@ def extract_claims(answer: str, citation_labels: list[str] | None = None) -> lis
     supported by two chunks at once.
     """
     labels = list(citation_labels or [])
+    mappings = list(claim_citations or [])
     text = (answer or "").strip()
     if not text:
         return []
@@ -154,14 +161,23 @@ def extract_claims(answer: str, citation_labels: list[str] | None = None) -> lis
     claims: list[Claim] = []
     for index, sentence in enumerate(_SENTENCE_SPLIT.split(text), start=1):
         sentence = sentence.strip()
-        if len(sentence) < MIN_CLAIM_CHARS:
+        if _ACKNOWLEDGEMENT.fullmatch(sentence):
             continue
+        mapped_labels = labels
+        if mappings:
+            mapping = mappings[index - 1] if index - 1 < len(mappings) else {}
+            if " ".join(str(mapping.get("claim", "")).split()) != sentence:
+                # A malformed map fails closed as an uncited claim.
+                mapped_labels = []
+            else:
+                raw_labels = mapping.get("citations", [])
+                mapped_labels = [label for label in raw_labels if isinstance(label, str)]
         claim_type = classify(sentence)
         claims.append(
             Claim(
                 claim_id=f"c{index}",
                 claim_text=sentence,
-                citation_labels=labels,
+                citation_labels=mapped_labels,
                 claim_type=claim_type,
                 required_tokens=_required_tokens(sentence, claim_type),
             )

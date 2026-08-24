@@ -1,0 +1,11 @@
+# Codespaces-only override. Compose runs inside the remote development
+# container; bind mounts make expensive model/database data survive a
+# Codespace rebuild because `/workspaces` is the persistent directory.
+services:
+  api:
+    volumes:
+      - ${RAGUARD_CODESPACES_DATA_DIR:?Open this project in Codespaces first}/models:/models
+
+  db:
+    volumes:
+      - ${RAGUARD_CODESPACES_DATA_DIR:?Open this project in Codespaces first}/postgres:/var/lib/postgresql/data

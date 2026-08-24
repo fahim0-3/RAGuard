@@ -43,7 +43,7 @@ from src.generation.prompts import (
     ANSWER_SYSTEM_PROMPT,
     PROMPT_VERSION,
 )
-from src.generation.schemas import AnswerResponse, Citation, RawAnswerPayload
+from src.generation.schemas import AnswerResponse, Citation, ClaimCitation, RawAnswerPayload
 from src.retrieval.types import RetrievedChunk
 
 logger = logging.getLogger(__name__)
@@ -55,6 +55,7 @@ __all__ = [
     "generate_answer",
     "generate_grounded_answer",
     "restrict_context",
+    "validate_claim_citations",
     "validate_citations",
 ]
 
@@ -144,6 +145,54 @@ def validate_citations(
     return resolved, invalid
 
 
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+
+def _answer_sentences(answer: str) -> list[str]:
+    """Every non-empty sentence is a separately grounded assertion.
+
+    Do not use a minimum length here. A brief sentence such as "Fees apply."
+    can carry an unsupported policy claim and must not bypass verification.
+    """
+    return [" ".join(part.split()) for part in _SENTENCE_SPLIT.split(answer.strip()) if part.strip()]
+
+
+def validate_claim_citations(
+    answer: str, claim_citations: list[ClaimCitation], chunks: list[RetrievedChunk]
+) -> tuple[list[ClaimCitation], list[Citation], list[str], str | None]:
+    """Validate an exact, per-sentence mapping from answer text to evidence.
+
+    The response may carry a convenient flattened citation list, but that list
+    is derived from this map. A citation for one sentence can no longer silently
+    warrant a different sentence in the answer.
+    """
+    expected_claims = _answer_sentences(answer)
+    supplied_claims = [claim.claim for claim in claim_citations]
+    if not expected_claims or supplied_claims != expected_claims:
+        return [], [], [], "claim citations must match every answer sentence in order"
+
+    canonical: list[ClaimCitation] = []
+    resolved: list[Citation] = []
+    invalid: list[str] = []
+    seen: set[str] = set()
+
+    for claim in claim_citations:
+        claim_resolved, claim_invalid = validate_citations(claim.citations, chunks)
+        invalid.extend(claim_invalid)
+        if not claim_resolved:
+            return [], [], invalid, "every answer sentence requires a supplied citation"
+        labels = [citation.citation_label for citation in claim_resolved]
+        canonical.append(ClaimCitation(claim=claim.claim, citations=labels))
+        for citation in claim_resolved:
+            if citation.citation_label not in seen:
+                seen.add(citation.citation_label)
+                resolved.append(citation)
+
+    if invalid:
+        return [], [], invalid, "one or more claim citations were not supplied"
+    return canonical, resolved, [], None
+
+
 # --------------------------------------------------------------------------
 # Chain
 # --------------------------------------------------------------------------
@@ -206,40 +255,23 @@ def generate_grounded_answer(
         chain = chain if chain is not None else build_answer_chain()
     except LLMProviderError as exc:
         logger.error("Generator unavailable: %s", exc)
-        return _failure(question, "provider_error", str(exc), supplied)
+        return _failure(question, "provider_error", "language model provider unavailable", supplied)
 
     try:
         raw = chain.invoke({"context": format_context(supplied), "question": question})
     except LLMProviderError as exc:
         logger.error("Generator unavailable: %s", exc)
-        return _failure(question, "provider_error", str(exc), supplied)
-    except Exception as exc:  # noqa: BLE001 - provider SDKs raise their own types
+        return _failure(question, "provider_error", "language model provider unavailable", supplied)
+    except Exception:  # noqa: BLE001 - provider SDKs raise their own types
         # Timeouts, rate limits, transport errors. Never an answer.
         logger.exception("Answer generation failed")
-        return _failure(
-            question, "provider_error", f"{type(exc).__name__}: {exc}", supplied
-        )
+        return _failure(question, "provider_error", "language model request failed", supplied)
 
     try:
         payload = RawAnswerPayload.model_validate(raw)
     except ValidationError as exc:
         logger.warning("Generator returned an unusable payload: %s", exc)
-        return _failure(
-            question, "invalid_output", f"schema validation failed: {exc}", supplied
-        )
-
-    citations, invalid = validate_citations(payload.citations, supplied)
-
-    if invalid:
-        # The model named evidence it was never shown.
-        logger.warning("Rejecting answer citing unsupplied passages: %s", invalid)
-        return _failure(
-            question,
-            "rejected_invalid_citation",
-            f"cited passages that were not supplied: {invalid}",
-            supplied,
-            rejected=invalid,
-        )
+        return _failure(question, "invalid_output", "model output did not match the required schema", supplied)
 
     answer_text = payload.answer.strip()
 
@@ -251,13 +283,23 @@ def generate_grounded_answer(
             supplied,
         )
 
-    if not citations:
-        # Grounded generation without a citation is exactly what Phase E exists
-        # to prevent, however fluent the prose is.
+    claim_citations, citations, invalid, claim_error = validate_claim_citations(
+        answer_text, payload.claim_citations, supplied
+    )
+    if invalid:
+        logger.warning("Rejecting answer citing unsupplied passages: %s", invalid)
         return _failure(
             question,
             "rejected_invalid_citation",
-            "answer supplied no citation, so it cannot be traced to evidence",
+            "answer cited evidence that was not supplied",
+            supplied,
+            rejected=invalid,
+        )
+    if claim_error or not citations:
+        return _failure(
+            question,
+            "rejected_invalid_citation",
+            claim_error or "answer supplied no citation, so it cannot be traced to evidence",
             supplied,
         )
 
@@ -266,6 +308,7 @@ def generate_grounded_answer(
         answer=answer_text,
         outcome="answered",
         citations=citations,
+        claim_citations=claim_citations,
         confidence=payload.confidence if payload.confidence is not None else 0.0,
         confidence_source="model" if payload.confidence is not None else "default",
         more_info_required=False,

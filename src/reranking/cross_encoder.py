@@ -112,7 +112,7 @@ class CrossEncoderReranker:
         settings = get_settings()
         self.model_name = model_name or settings.reranker_model
         self.fallback_model_name = fallback_model_name or settings.reranker_fallback_model
-        self.device = device or settings.model_device
+        self.device = device or settings.resolved_reranker_device
         self.enabled = settings.reranker_enabled if enabled is None else enabled
         self.batch_size = settings.reranker_batch_size
         self.max_length = settings.reranker_max_length

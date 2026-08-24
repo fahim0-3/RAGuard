@@ -73,6 +73,12 @@ def answer_payload(**overrides) -> dict:
         "confidence": 0.9,
     }
     payload.update(overrides)
+    if "claim_citations" not in overrides:
+        payload["claim_citations"] = (
+            [{"claim": payload["answer"], "citations": list(payload["citations"])}]
+            if payload["answer"] and payload["sufficient_context"]
+            else []
+        )
     return payload
 
 
@@ -443,7 +449,7 @@ def test_missing_api_key_is_a_provider_error_not_an_answer(evidence, monkeypatch
 
     assert result.outcome == "provider_error"
     assert result.answer == ""
-    assert "GOOGLE_API_KEY" in result.failure_reason
+    assert result.failure_reason == "language model provider unavailable"
 
 
 def test_importing_the_factory_without_a_key_does_not_raise():

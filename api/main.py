@@ -28,19 +28,24 @@ first user query does not sit inside a multi-gigabyte download. `/ready` stays
 
 from __future__ import annotations
 
+import hmac
 import logging
 import threading
 import time
 import uuid
+from collections.abc import Iterator
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from api.admission import query_admission
+from api.observability import log_event, runtime_metrics
 from api.schemas import (
+    REQUEST_ID_PATTERN,
     CitationOut,
     ErrorResponse,
     HealthResponse,
@@ -48,6 +53,13 @@ from api.schemas import (
     QueryResponse,
     ReadyResponse,
     TraceStep,
+)
+from api.tracing import (
+    annotate_query_span,
+    configure_tracing,
+    inject_trace_context,
+    shutdown_tracing,
+    start_request_span,
 )
 from src.config import Settings, get_settings
 from src.generation.llm_factory import LLMProviderError
@@ -72,6 +84,7 @@ CITATION_EXCERPT_CHARS = 400
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_tracing(get_settings())
     try:
         init_schema()
         logger.info("Connected to pgvector, %d chunks indexed", count_chunks())
@@ -98,6 +111,7 @@ async def lifespan(app: FastAPI):
 
     yield
     close_pool()
+    shutdown_tracing()
 
 
 app = FastAPI(
@@ -115,8 +129,25 @@ app.add_middleware(
     allow_origins=_settings.cors_allow_origins_list,
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "X-Request-ID"],
+    allow_headers=["Content-Type", "X-Admin-Key", "X-Request-ID"],
+    expose_headers=["traceparent"],
 )
+
+
+@app.middleware("http")
+async def trace_request(request: Request, call_next):
+    """Propagate W3C context while keeping traces free of customer content."""
+    with start_request_span(request.method, request.url.path, request.headers) as span:
+        try:
+            response = await call_next(request)
+        except Exception:
+            span.set_attribute("http.response.status_code", 500)
+            raise
+        span.set_attribute("http.response.status_code", response.status_code)
+        trace_context = inject_trace_context()
+        if traceparent := trace_context.get("traceparent"):
+            response.headers["traceparent"] = traceparent
+        return response
 
 
 def graph_dependency() -> SelfHealingGraph:
@@ -138,10 +169,64 @@ def reset_graph_service() -> None:
     """Drop the cached service. Used by tests that inject a fake."""
     global _service
     _service = None
+    query_admission.reset()
+    runtime_metrics.reset()
 
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 GraphDep = Annotated[SelfHealingGraph, Depends(graph_dependency)]
+
+
+def _safe_header_request_id(request: Request) -> str | None:
+    """Return only an allow-listed correlation ID from an HTTP header."""
+    candidate = (request.headers.get("X-Request-ID") or "").strip()
+    return candidate if REQUEST_ID_PATTERN.fullmatch(candidate) else None
+
+
+def require_admin(request: Request, settings: SettingsDep) -> None:
+    """Protect diagnostic and state-changing operational endpoints.
+
+    An empty server-side key disables these endpoints instead of accidentally
+    publishing document contents or an expensive reindex/warmup operation.
+    """
+    supplied = request.headers.get("X-Admin-Key") or ""
+    expected = settings.admin_api_key
+    if not expected or not supplied or not hmac.compare_digest(supplied, expected):
+        logger.warning("Operational endpoint denied [path=%s]", request.url.path)
+        log_event("operational_access_denied", path=request.url.path)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+
+def admit_query(request: Request, settings: SettingsDep) -> Iterator[None]:
+    """Bound local model work before the graph starts executing.
+
+    This is intentionally process-local. A distributed deployment must enforce
+    the same limit before traffic reaches individual workers.
+    """
+    peer = request.client.host if request.client else "unknown"
+    lease = query_admission.acquire(
+        peer,
+        max_concurrency=settings.query_max_concurrency,
+        requests_per_minute=settings.query_rate_limit_per_minute,
+    )
+    if lease.reason == "rate_limited":
+        runtime_metrics.record_admission_rejected(lease.reason)
+        log_event("query_admission_rejected", reason=lease.reason)
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS)
+    if lease.reason in {"busy", "admission_backend_unavailable"}:
+        runtime_metrics.record_admission_rejected(lease.reason)
+        log_event("query_admission_rejected", reason=lease.reason)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    runtime_metrics.record_admitted()
+    try:
+        yield
+    finally:
+        query_admission.release(lease)
+
+
+AdminDep = Annotated[None, Depends(require_admin)]
+AdmissionDep = Annotated[None, Depends(admit_query)]
 
 
 # --------------------------------------------------------------------------
@@ -167,7 +252,7 @@ async def validation_handler(request: Request, exc: RequestValidationError) -> J
         fields.append(f"{location or 'body'}: {err.get('msg', 'invalid')}")
     logger.info("Rejected malformed request: %s", fields)
     return _error(
-        request.headers.get("X-Request-ID"),
+        _safe_header_request_id(request),
         status.HTTP_422_UNPROCESSABLE_ENTITY,
         "invalid_request",
         "; ".join(fields)[:500],
@@ -179,7 +264,7 @@ async def provider_handler(request: Request, exc: LLMProviderError) -> JSONRespo
     """A misconfigured or unreachable provider is a 503, not a 500."""
     logger.error("Provider unavailable: %s", exc)
     return _error(
-        request.headers.get("X-Request-ID"),
+        _safe_header_request_id(request),
         status.HTTP_503_SERVICE_UNAVAILABLE,
         "provider_unavailable",
         "The configured language model provider is unavailable. Check service configuration.",
@@ -189,7 +274,7 @@ async def provider_handler(request: Request, exc: LLMProviderError) -> JSONRespo
 @app.exception_handler(Exception)
 async def unexpected_handler(request: Request, exc: Exception) -> JSONResponse:
     """Last resort. The cause goes to the log; the client gets a reference."""
-    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request_id = _safe_header_request_id(request) or str(uuid.uuid4())
     logger.exception("Unhandled error [request_id=%s]", request_id)
     return _error(
         request_id,
@@ -197,6 +282,29 @@ async def unexpected_handler(request: Request, exc: Exception) -> JSONResponse:
         "internal_error",
         "An unexpected error occurred. Quote the request_id when reporting this.",
     )
+
+
+@app.exception_handler(HTTPException)
+async def http_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Keep expected HTTP failures on the same non-leaking response contract."""
+    request_id = _safe_header_request_id(request)
+    if exc.status_code == status.HTTP_403_FORBIDDEN:
+        return _error(request_id, exc.status_code, "forbidden", "This endpoint requires access.")
+    if exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
+        return _error(
+            request_id,
+            exc.status_code,
+            "rate_limited",
+            "Too many requests. Retry shortly.",
+        )
+    if exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
+        return _error(
+            request_id,
+            exc.status_code,
+            "service_busy",
+            "The service is temporarily busy. Retry shortly.",
+        )
+    return _error(request_id, exc.status_code, "request_failed", "The request could not be completed.")
 
 
 # --------------------------------------------------------------------------
@@ -318,6 +426,27 @@ def _verification_status(verification: dict[str, Any]) -> str:
     return "supported" if verification.get("supported") else "unsupported"
 
 
+def _public_failure_reason(summary: dict[str, Any]) -> str | None:
+    """Never project provider, database, or exception text into the API."""
+    outcome = summary.get("final_outcome")
+    if outcome == "clarify":
+        return "ambiguous_request"
+    if outcome == "escalate":
+        return "risk_escalation"
+
+    reason = str(summary.get("failure_reason") or "")
+    allowed = {
+        "retrieval_failed",
+        "provider_error",
+        "invalid_output",
+        "rejected_insufficient_context",
+        "rejected_invalid_citation",
+        "rejected_empty_answer",
+        "answer_not_grounded",
+    }
+    return reason if reason in allowed else ("request_not_completed" if reason else None)
+
+
 def to_response(
     state: dict[str, Any], summary: dict[str, Any], latency_ms: float
 ) -> QueryResponse:
@@ -342,7 +471,7 @@ def to_response(
         evidence_sufficient=grade.get("sufficient"),
         retrieved_chunk_count=int(summary.get("retrieved_chunk_count") or 0),
         reranker_used=summary.get("reranker_used"),
-        failure_reason=summary.get("failure_reason") or None,
+        failure_reason=_public_failure_reason(summary),
         trace=[
             TraceStep(step=i, node=node)
             for i, node in enumerate(summary.get("node_sequence") or [], start=1)
@@ -353,7 +482,9 @@ def to_response(
 
 
 @app.post("/query", response_model=QueryResponse)
-def query(request: QueryRequest, service: GraphDep) -> QueryResponse | JSONResponse:
+def query(
+    request: QueryRequest, service: GraphDep, _admission: AdmissionDep
+) -> QueryResponse | JSONResponse:
     """Run the self-healing workflow over one question.
 
     Every stage happens inside the graph. This function supplies a request ID,
@@ -373,10 +504,14 @@ def query(request: QueryRequest, service: GraphDep) -> QueryResponse | JSONRespo
             request_id,
             "failed" if failed else "loading",
         )
+        failure_code = "model_unavailable" if failed else "service_not_ready"
+        runtime_metrics.record_failure(failure_code)
+        annotate_query_span(request_id=request_id, failure_reason=failure_code)
+        log_event("query_rejected", failure_reason=failure_code)
         return _error(
             request_id,
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            "model_unavailable" if failed else "service_not_ready",
+            failure_code,
             (
                 "The embedding model failed to initialize. Check the API logs."
                 if failed
@@ -389,9 +524,15 @@ def query(request: QueryRequest, service: GraphDep) -> QueryResponse | JSONRespo
     try:
         state = service.invoke(request.query, request_id=request_id)
     except LLMProviderError:
+        runtime_metrics.record_failure("provider_unavailable")
+        annotate_query_span(request_id=request_id, failure_reason="provider_unavailable")
+        log_event("query_failed", failure_reason="provider_unavailable")
         raise
     except Exception as exc:
         logger.exception("Graph execution failed [request_id=%s]", request_id)
+        runtime_metrics.record_failure("workflow_unavailable")
+        annotate_query_span(request_id=request_id, failure_reason="workflow_unavailable")
+        log_event("query_failed", failure_reason="workflow_unavailable")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="The answering workflow is temporarily unavailable.",
@@ -402,14 +543,27 @@ def query(request: QueryRequest, service: GraphDep) -> QueryResponse | JSONRespo
     summary = summarise(state)
     latency_ms = (time.perf_counter() - started) * 1000.0
 
-    logger.info(
-        "Query completed [request_id=%s, outcome=%s, retries=%s, latency_ms=%.0f]",
-        request_id,
-        summary.get("final_outcome"),
-        summary.get("retry_count"),
-        latency_ms,
+    response = to_response(state, summary, latency_ms)
+    runtime_metrics.record_completed(
+        outcome=response.outcome,
+        latency_ms=latency_ms,
+        retrieved_chunk_count=response.retrieved_chunk_count,
+        evidence_sufficient=response.evidence_sufficient,
+        verification_status=response.verification_status,
+        reranker_used=response.reranker_used,
     )
-    return to_response(state, summary, latency_ms)
+    annotate_query_span(request_id=request_id, outcome=response.outcome)
+    log_event(
+        "query_completed",
+        outcome=response.outcome,
+        retry_count=response.retry_count,
+        retrieved_chunk_count=response.retrieved_chunk_count,
+        evidence_sufficient=response.evidence_sufficient,
+        verification_status=response.verification_status,
+        reranker_used=response.reranker_used,
+        latency_ms=round(latency_ms, 1),
+    )
+    return response
 
 
 # --------------------------------------------------------------------------
@@ -418,7 +572,9 @@ def query(request: QueryRequest, service: GraphDep) -> QueryResponse | JSONRespo
 
 
 @app.post("/retrieve")
-def retrieve(request: QueryRequest, settings: SettingsDep) -> dict[str, Any]:
+def retrieve(
+    request: QueryRequest, settings: SettingsDep, _admin: AdminDep
+) -> dict[str, Any]:
     """Retrieval and reranking only, with no LLM call.
 
     The endpoint to use when deciding whether a failure is retrieval or
@@ -439,14 +595,14 @@ def retrieve(request: QueryRequest, settings: SettingsDep) -> dict[str, Any]:
 
 
 @app.post("/admin/reindex")
-def reindex() -> dict[str, int]:
+def reindex(_admin: AdminDep) -> dict[str, int]:
     """Rebuild the in-memory BM25 index after ingestion."""
     index = refresh_bm25_index()
     return {"bm25_documents": index.size, "chunks_indexed": count_chunks()}
 
 
 @app.post("/admin/warmup")
-def warmup() -> dict[str, str]:
+def warmup(_admin: AdminDep) -> dict[str, str]:
     """Load the embedding and reranker models ahead of the first user request."""
     from src.reranking import get_reranker
     from src.retrieval.embeddings import get_embedding_model
@@ -461,6 +617,25 @@ def warmup() -> dict[str, str]:
     return {"status": "warm"}
 
 
+@app.get("/admin/metrics")
+def metrics(_admin: AdminDep) -> dict[str, Any]:
+    """Process-local operational aggregates with no customer or corpus data."""
+    return runtime_metrics.snapshot()
+
+
+@app.get("/metrics", include_in_schema=False)
+def prometheus_metrics(_admin: AdminDep) -> Response:
+    """Prometheus scrape output, protected by the operational API key.
+
+    In production also restrict this path at the ingress/network layer; the
+    key is defense in depth and keeps the endpoint closed by default.
+    """
+    return Response(
+        content=runtime_metrics.prometheus_text(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
+
+
 @app.get("/config")
 def config(settings: SettingsDep) -> dict[str, Any]:
     """Non-secret configuration, for reproducing a run. Never includes a key."""
@@ -473,6 +648,7 @@ def config(settings: SettingsDep) -> dict[str, Any]:
         ),
         "embedding_model": settings.embedding_model,
         "reranker_model": settings.reranker_model,
+        "reranker_device": settings.resolved_reranker_device,
         "chunk_size": settings.chunk_size,
         "chunk_overlap": settings.chunk_overlap,
         "dense_top_k": settings.dense_top_k,

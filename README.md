@@ -128,6 +128,24 @@ uvicorn api.main:app --reload --port 8000
 streamlit run frontend/app.py
 ```
 
+### GitHub Codespaces
+
+Codespaces keeps the workspace, Docker images, model cache, database, and
+build cache on GitHub's remote infrastructure rather than on the developer's
+Windows drives. Open the repository in a Codespace, add `GOOGLE_API_KEY` and
+`ADMIN_API_KEY` as Codespaces secrets, then use the remote terminal:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.codespaces.yml \
+  --profile full up --build -d
+```
+
+The `.devcontainer` setup provides Docker-in-Docker and maps model/database
+data to `.codespaces/`, which persists in the remote `/workspaces` directory
+but is excluded from Git and from Docker build contexts. Ports 8000 and 8501
+are forwarded privately by Codespaces. The first start still downloads the
+models remotely; it does not consume local C: or D: storage.
+
 ---
 
 ## API
@@ -166,6 +184,38 @@ become ready in seconds.
 The Streamlit UI checks `/ready` before sending a question, so a query is never
 parked behind a download; while the model is still loading it says so instead of
 spinning.
+
+### Optional reranker GPU benchmark
+
+The API defaults to CPU for both local models. This preserves the measured
+configuration and works on every Docker Desktop installation. On a machine
+with an NVIDIA GPU, embeddings can remain on CPU while only the cross-encoder
+uses CUDA. First confirm Docker can expose the GPU:
+
+```bash
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+```
+
+Then start the optional override and confirm that PyTorch sees CUDA inside the
+API container:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile full up -d --build api
+docker compose exec api python -c "import torch; print(torch.cuda.is_available())"
+```
+
+Benchmark CPU and CUDA separately before changing the service setting. The
+script measures only cross-encoder inference; model loading is reported
+separately and no historical evaluation report is overwritten.
+
+```bash
+docker compose exec api python scripts/benchmark_reranker.py --device cpu --limit 12 --output reports/reranker_cpu.json
+docker compose exec api python scripts/benchmark_reranker.py --device cuda --limit 12 --output reports/reranker_cuda.json
+```
+
+Keep CUDA only when the report shows a material latency improvement and the
+existing reranking evaluation still passes. The 4 GB RTX 3050 budget is tight,
+so this configuration intentionally keeps BGE-M3 embeddings on CPU.
 
 **Troubleshooting model initialisation**
 
@@ -371,6 +421,7 @@ Everything is environment-driven; see [.env.example](.env.example). Selected def
 | `GEMINI_JUDGE_MODEL` | `gemini-flash-lite-latest` | Deliberately different from the generator |
 | `EMBEDDING_MODEL` | `BAAI/bge-m3` | 1024-dimensional dense vectors |
 | `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | ~568 M parameters; falls back to a 22 M model if it cannot load |
+| `RERANKER_DEVICE` | inherits `MODEL_DEVICE` | Separate device for the cross-encoder; use `cuda` only after benchmarking |
 | `LLM_TEMPERATURE` | `0.0` | The rewriter adds its own offset |
 | `EVIDENCE_TOP_SCORE_THRESHOLD` | `0.35` | One half of the evidence decision |
 | `EVIDENCE_MIN_RELEVANT_CHUNKS` | `2` | |

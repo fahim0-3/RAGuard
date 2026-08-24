@@ -23,6 +23,7 @@ htmlcov/
 
 # --- Model and data caches ---
 .cache/
+.codespaces/
 models/
 *.pkl
 
