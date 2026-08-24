@@ -61,7 +61,9 @@ jobs:
           pip install pytest pydantic pydantic-settings python-dotenv \
                       langchain-core langchain-text-splitters rank-bm25 \
                       langgraph jsonschema fastapi httpx pyyaml \
-                      "psycopg[binary]" psycopg-pool pgvector
+                      "psycopg[binary]" psycopg-pool pgvector redis \
+                      opentelemetry-api opentelemetry-sdk \
+                      opentelemetry-exporter-otlp-proto-http
       - name: Run fast tier
         # `not slow` is redundant today (every slow test is also heavy) but is
         # stated so the gate does not silently acquire a 40-minute job if that
