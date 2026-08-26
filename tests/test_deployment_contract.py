@@ -5,8 +5,45 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
+from yaml.constructor import ConstructorError
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class UniqueKeyLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects keys GitHub would reject."""
+
+
+def _construct_unique_mapping(loader, node, deep=False):
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
+
+
+def load_contract_yaml(path: Path):
+    return yaml.load(path.read_text(encoding="utf-8"), Loader=UniqueKeyLoader)
+
+
+def test_deployment_yaml_contains_no_duplicate_keys():
+    paths = [ROOT / "render.yaml", *(ROOT / ".github" / "workflows").glob("*.yml")]
+
+    for path in paths:
+        assert load_contract_yaml(path) is not None, path
 
 
 def test_api_image_forces_cpu_torch_and_one_worker():
@@ -38,7 +75,7 @@ def test_frontend_image_does_not_install_model_dependencies():
 
 def test_release_workflow_builds_both_images_after_contract_tests():
     path = ROOT / ".github" / "workflows" / "release.yml"
-    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+    workflow = load_contract_yaml(path)
 
     jobs = workflow["jobs"]
     assert jobs["images"]["needs"] == "release-contract"
@@ -58,7 +95,7 @@ def test_production_environment_template_contains_no_real_secret():
 
 
 def test_render_blueprint_has_the_required_remote_resources():
-    blueprint = yaml.safe_load((ROOT / "render.yaml").read_text(encoding="utf-8"))
+    blueprint = load_contract_yaml(ROOT / "render.yaml")
     services = {service["name"]: service for service in blueprint["services"]}
 
     api = services["raguard-api-fahim03"]
@@ -79,7 +116,7 @@ def test_render_blueprint_has_the_required_remote_resources():
 
 
 def test_render_blueprint_prompts_for_secrets_instead_of_committing_them():
-    blueprint = yaml.safe_load((ROOT / "render.yaml").read_text(encoding="utf-8"))
+    blueprint = load_contract_yaml(ROOT / "render.yaml")
     api = next(service for service in blueprint["services"] if service["name"].startswith("raguard-api"))
     env = {item["key"]: item for item in api["envVars"]}
 
