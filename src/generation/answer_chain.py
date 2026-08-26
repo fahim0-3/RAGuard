@@ -238,6 +238,8 @@ def generate_grounded_answer(
     chunks: list[RetrievedChunk],
     top_k: int | None = None,
     chain: Any | None = None,
+    previous_answer: str = "",
+    verification_feedback: str = "",
 ) -> AnswerResponse:
     """Answer `question` using only `chunks`, validated end to end.
 
@@ -258,7 +260,16 @@ def generate_grounded_answer(
         return _failure(question, "provider_error", "language model provider unavailable", supplied)
 
     try:
-        raw = chain.invoke({"context": format_context(supplied), "question": question})
+        raw = chain.invoke(
+            {
+                "context": format_context(supplied),
+                "question": question,
+                # Both values are explicitly marked as data in the prompt and
+                # never replace the supplied passages as evidence.
+                "previous_answer": previous_answer.strip(),
+                "verification_feedback": verification_feedback.strip(),
+            }
+        )
     except LLMProviderError as exc:
         logger.error("Generator unavailable: %s", exc)
         return _failure(question, "provider_error", "language model provider unavailable", supplied)

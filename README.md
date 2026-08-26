@@ -128,6 +128,60 @@ uvicorn api.main:app --reload --port 8000
 streamlit run frontend/app.py
 ```
 
+### Native Windows with managed pgvector (no Docker)
+
+Use this mode when you want the API and UI on Windows but do not want local Docker
+images, containers, Redis, or PostgreSQL data. It needs a managed PostgreSQL database whose
+provider supports the `vector` extension. Create that database in the provider's dashboard,
+enable `vector`, and put its **direct PostgreSQL connection URL** in `.env` as `DATABASE_URL`.
+Do not use a transaction-pooler URL: RAGuard keeps a small connection pool and needs normal
+session semantics for pgvector.
+
+Managed-database outages are bounded by `DB_POOL_TIMEOUT_S` (10 seconds by
+default), while background connection creation is bounded separately by
+`DB_CONNECT_TIMEOUT_S` and `DB_RECONNECT_TIMEOUT_S`. This keeps `/ready` responsive
+without pretending an unavailable database is healthy.
+
+Enable pgvector once, then validate the remote connection. The setup command only creates the
+required extension; the check command does not change the database:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run-native.ps1 -Task setup-db
+powershell -ExecutionPolicy Bypass -File .\scripts\run-native.ps1 -Task check-db
+```
+
+Then use three PowerShell terminals. These commands never invoke Docker. The launcher places
+Hugging Face and SentenceTransformer downloads under `.cache\raguard-models` in the repository,
+instead of the default `%USERPROFILE%` cache on C:.
+
+```powershell
+# Terminal 1: creates/updates RAGuard's tables and indexes, then embeds the corpus.
+powershell -ExecutionPolicy Bypass -File .\scripts\run-native.ps1 -Task ingest -Reset
+
+# Terminal 2: API at http://localhost:8000
+powershell -ExecutionPolicy Bypass -File .\scripts\run-native.ps1 -Task api
+
+# Terminal 3: UI at http://localhost:8501
+powershell -ExecutionPolicy Bypass -File .\scripts\run-native.ps1 -Task frontend
+```
+
+After one successful online API start has populated the model cache, add
+`-OfflineModels` to the API or ingestion command to forbid any Hugging Face
+network access. If a required model is missing, `/ready` reports failure rather
+than starting another download.
+
+The API command runs a single process by default. During active backend editing,
+add `-Reload` to opt into Uvicorn's file-watcher subprocess. Keep the default for
+normal use: it has lower memory overhead and gives managed-database connections a
+simpler lifecycle.
+
+`ADMISSION_BACKEND=local` is forced only for these native launcher processes. That is correct
+for one local API process and removes the need for a Redis service; retain the Redis-backed
+setting when deploying multiple API replicas. The launcher selects the validated
+`RAGUARD_RUNTIME_PROFILE=local_compact` profile, which uses
+`cross-encoder/ms-marco-MiniLM-L-6-v2` and avoids the primary reranker's approximately 2.2 GB
+model download. Docker and production omit that override and retain the `full` profile.
+
 ### GitHub Codespaces
 
 Codespaces keeps the workspace, Docker images, model cache, database, and
@@ -146,6 +200,41 @@ but is excluded from Git and from Docker build contexts. Ports 8000 and 8501
 are forwarded privately by Codespaces. The first start still downloads the
 models remotely; it does not consume local C: or D: storage.
 
+### Production cloud release (P1)
+
+Production uses two independently scalable images: the FastAPI service from
+`Dockerfile` and the lightweight Streamlit service from `Dockerfile.frontend`.
+The API image installs CPU-only PyTorch explicitly, excludes test/evaluation/UI
+dependencies through `requirements-api.txt`, runs as a non-root user, and uses
+one worker per container so model memory is not duplicated accidentally.
+
+Copy the non-secret contract in `deploy/environment.example` into the cloud
+provider's environment configuration, then put `DATABASE_URL`,
+`GOOGLE_API_KEY`, `ADMIN_API_KEY`, and the Redis URL in its secret manager.
+Mount a writable remote persistent disk at `HF_HOME=/models`; UID/GID 10001 must
+be able to write it.
+
+Before promoting a release, run the strict preflight from the release
+environment:
+
+```bash
+python -m scripts.production_preflight --check-database --check-redis
+```
+
+After deployment, use the bounded public smoke check:
+
+```bash
+python -m scripts.smoke_service \
+  --base-url https://api.example.com \
+  --expected-profile local_compact \
+  --deadline-s 600
+```
+
+The `Production release` GitHub Actions workflow runs the release-contract
+tests, builds both images remotely, can publish immutable commit-SHA tags to
+GHCR, and optionally performs the same smoke check against a deployed URL.
+Detailed storage and rollback requirements are in `deploy/README.md`.
+
 ---
 
 ## API
@@ -156,7 +245,7 @@ resulting state onto a closed response schema; no endpoint reimplements a pipeli
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /health` | Liveness. Touches no dependency, so a service with a broken database stays diagnosable |
-| `GET /ready` | Readiness. Checks database, corpus, provider configuration, **and whether the embedding model is loaded**; 503 with a per-dependency breakdown |
+| `GET /ready` | Readiness. Checks database, corpus, provider configuration, and both enabled local models; 503 with a per-dependency breakdown |
 | `POST /query` | Runs the self-healing workflow. Returns outcome, answer, citations, retry counts, verification status, and trace |
 | `POST /retrieve` | Retrieval and reranking only, no LLM. Use it to tell a retrieval failure from a generation failure |
 | `GET /config` | Non-secret configuration, for reproducing an evaluation run |
@@ -165,20 +254,21 @@ resulting state onto a closed response schema; no endpoint reimplements a pipeli
 
 ### Start-up, model loading, and readiness
 
-The embedding model is warmed in a **background thread** during API start-up, so
-the first user query never sits inside a download. That splits the two probes
-cleanly:
+The embedding and enabled reranker models are warmed in **background threads**
+during API start-up, so the first user query never sits inside a download. That
+splits the two probes cleanly:
 
 - **`/health`** means the process is alive. It touches no dependency and answers
   immediately, so the container is not killed by its own health check while
   warming.
 - **`/ready`** means a query can actually be served. It returns **503** until the
   database is reachable, the corpus is ingested, the provider is configured, and
-  the embedding model is resident.
+  the embedding model and enabled reranker are resident.
 
-On a cold cache the first start downloads roughly 2.2 GB into the persistent
-`raguard_models` volume, and `/ready` reports `embedding_model: loading` for the
-duration. That is expected, not a fault. Subsequent starts reuse the volume and
+On a cold cache the embedding model downloads roughly 2.2 GB into the persistent
+`raguard_models` volume. The `full` profile's reranker adds approximately another
+2.2 GB; `local_compact` adds only about 90 MB. `/ready` reports each model's
+independent load state for the duration. Subsequent starts reuse the cache and
 become ready in seconds.
 
 The Streamlit UI checks `/ready` before sending a question, so a query is never
@@ -332,7 +422,7 @@ pytest -m "not integration and not heavy and not llm and not slow"
 
 | Tier | Selector | Tests | Runtime |
 | --- | --- | --- | --- |
-| Fast | `not integration and not heavy and not llm and not slow` | 563 | ~20 s |
+| Fast | `not integration and not heavy and not llm and not slow` | 666 | ~45 s |
 | Integration | `integration and not llm` | 65 | ~2 min |
 | Slow | `slow` | 51 | ~40 min |
 | LLM | `llm` | 4 | quota |
@@ -340,6 +430,10 @@ pytest -m "not integration and not heavy and not llm and not slow"
 Markers are declared in [pyproject.toml](pyproject.toml): `integration` needs pgvector with an
 ingested corpus, `heavy` loads local transformer models, `llm` consumes provider quota, and `slow`
 runs the real cross-encoder over the whole dataset.
+
+Heavy tests also require the explicit environment opt-in
+`RAGUARD_ALLOW_HEAVY_TESTS=1`. This second gate prevents a broad local `pytest` command from
+silently downloading gigabytes. The dedicated heavy benchmark workflow sets it deliberately.
 
 Tests that assert offline behaviour are genuinely offline. The API fixture does not enter
 `TestClient`'s context manager, because doing so fires the app lifespan and opens a database

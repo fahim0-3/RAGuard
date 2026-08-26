@@ -27,6 +27,8 @@ jobs:
   reranker-benchmark:
     name: Cross-encoder benchmark
     runs-on: ubuntu-latest
+    env:
+      RAGUARD_ALLOW_HEAVY_TESTS: "1"
     # The benchmark itself is the long pole; the cap is generous on purpose so
     # a slow runner reports a result rather than a timeout.
     timeout-minutes: 120

@@ -167,8 +167,12 @@ def test_direct_access_still_raises_for_callers_that_can_handle_it(
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
     """No lifespan: these tests drive the endpoints, not start-up."""
+    monkeypatch.setattr("api.main.is_reranker_model_loaded", lambda: True)
+    monkeypatch.setattr(
+        "api.main.loaded_reranker_model_name", lambda: "test-reranker"
+    )
     test_client = TestClient(app, raise_server_exceptions=False)
     yield test_client
     app.dependency_overrides.clear()
@@ -230,6 +234,36 @@ def test_ready_is_200_once_the_model_is_loaded(client, monkeypatch):
     body = response.json()
     assert body["status"] == "ready"
     assert body["checks"]["embedding_model"]["status"] == "loaded"
+    assert body["checks"]["reranker_model"]["status"] == "loaded"
+
+
+def test_ready_is_503_while_the_enabled_reranker_is_loading(client, monkeypatch):
+    monkeypatch.setattr("api.main.count_chunks", lambda: 22)
+    monkeypatch.setattr("api.main.is_model_loaded", lambda: True)
+    monkeypatch.setattr("api.main.is_reranker_model_loaded", lambda: False)
+    monkeypatch.setattr("api.main.reranker_model_load_error", lambda: None)
+
+    response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["checks"]["reranker_model"]["status"] == "loading"
+
+
+def test_ready_allows_an_explicitly_disabled_reranker(client, monkeypatch):
+    from src.config import Settings, get_settings
+
+    monkeypatch.setattr("api.main.count_chunks", lambda: 22)
+    monkeypatch.setattr("api.main.is_model_loaded", lambda: True)
+    monkeypatch.setattr("api.main.is_reranker_model_loaded", lambda: False)
+    stub = Settings(_env_file=None).model_copy(
+        update={"llm_provider": "ollama", "reranker_enabled": False}
+    )
+    app.dependency_overrides[get_settings] = lambda: stub
+
+    response = client.get("/ready")
+
+    assert response.status_code == 200
+    assert response.json()["checks"]["reranker_model"]["status"] == "disabled"
 
 
 def test_ready_reports_the_database_and_model_independently(client, monkeypatch):
@@ -285,12 +319,15 @@ def test_startup_schedules_a_background_warmup(monkeypatch):
     monkeypatch.setattr(
         "api.main.warmup_embedding_model", lambda: calls.append("warmed") or True
     )
+    monkeypatch.setattr(
+        "api.main.warmup_reranker_model", lambda: calls.append("reranked") or True
+    )
 
     with TestClient(app):
         # Entering the context runs the lifespan, which starts a daemon thread.
         for _ in range(50):
-            if calls:
+            if len(calls) == 2:
                 break
             time.sleep(0.05)
 
-    assert calls == ["warmed"], "start-up did not warm the embedding model"
+    assert sorted(calls) == ["reranked", "warmed"]

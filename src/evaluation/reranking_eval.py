@@ -266,11 +266,11 @@ def run_comparison(
             "policy_ids": policy_ids,
         },
         "model": {
-            "configured": settings.reranker_model,
+            "configured": settings.resolved_reranker_model,
             "loaded": getattr(reranker, "_loaded_model_name", None),
             "fallback_configured": settings.reranker_fallback_model,
             "fallback_used": getattr(reranker, "_loaded_model_name", None)
-            not in (None, settings.reranker_model),
+            not in (None, settings.resolved_reranker_model),
             "device": settings.model_device,
         },
         "model_configuration": reranker.config(),

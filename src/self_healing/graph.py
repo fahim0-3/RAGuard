@@ -266,12 +266,45 @@ def query_rewriter(state: GraphState) -> dict[str, Any]:
     }
 
 
+def _revision_feedback(state: GraphState) -> tuple[str, str]:
+    """Return bounded, structured feedback only on a regeneration pass.
+
+    The first draft has no revision context. After verification fails, the
+    generator receives its prior draft plus the verifier's operational result,
+    marked as data by the prompt. This makes the one permitted regeneration
+    corrective instead of an identical retry.
+    """
+    if int(state.get("regeneration_count", 0)) <= 0:
+        return "", ""
+
+    previous = str(state.get("answer_draft") or "").strip()[:4000]
+    verification = VerificationResult.model_validate(state.get("verification_result") or {})
+    details: list[str] = []
+    if verification.reason:
+        details.append(verification.reason)
+    if verification.unsupported_claims:
+        details.append(
+            "Unsupported claims: " + "; ".join(verification.unsupported_claims[:5])
+        )
+    if verification.missing_evidence:
+        details.append("Missing exact evidence: " + ", ".join(verification.missing_evidence[:10]))
+    if verification.invalid_citations:
+        details.append("Invalid citations: " + ", ".join(verification.invalid_citations[:10]))
+    return previous, " ".join(details)[:4000]
+
+
 def generate_answer(state: GraphState) -> dict[str, Any]:
     """Grounded generation over the final chunks. Reuses the Phase E path."""
     from src.generation.answer_chain import generate_grounded_answer
 
     chunks = list(state.get("retrieved_chunks") or [])
-    response = generate_grounded_answer(state.get("current_query", ""), chunks)
+    previous_answer, verification_feedback = _revision_feedback(state)
+    response = generate_grounded_answer(
+        state.get("current_query", ""),
+        chunks,
+        previous_answer=previous_answer,
+        verification_feedback=verification_feedback,
+    )
 
     return {
         "answer_draft": response.answer,

@@ -12,10 +12,24 @@ Run the fast tier with:  pytest -m "not heavy and not integration and not llm"
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from src.evaluation.metrics import load_golden_dataset
 from src.retrieval.types import RetrievedChunk
+
+
+def pytest_collection_modifyitems(items):
+    """Require a second, explicit opt-in before any real model test can run."""
+    if os.getenv("RAGUARD_ALLOW_HEAVY_TESTS") == "1":
+        return
+    blocked = pytest.mark.skip(
+        reason="set RAGUARD_ALLOW_HEAVY_TESTS=1 to permit transformer downloads"
+    )
+    for item in items:
+        if item.get_closest_marker("heavy") is not None:
+            item.add_marker(blocked)
 
 
 @pytest.fixture(scope="session")

@@ -140,15 +140,22 @@ def world(monkeypatch):
                                  rationale="ok")],
         "answer": StubAnswer(),
         "grade_calls": 0,
+        "generation_calls": [],
     }
 
     monkeypatch.setattr(
         "src.retrieval.hybrid.get_hybrid_retriever", lambda: state["retriever"]
     )
     monkeypatch.setattr("src.reranking.get_reranker", lambda: state["reranker"])
+    def fake_generate(question, chunks, **kwargs):
+        state["generation_calls"].append(
+            {"question": question, "chunks": list(chunks), **kwargs}
+        )
+        return state["answer"]
+
     monkeypatch.setattr(
         "src.generation.answer_chain.generate_grounded_answer",
-        lambda q, c, **kw: state["answer"],
+        fake_generate,
     )
 
     def fake_grade(query, chunks, **kwargs):
@@ -639,6 +646,19 @@ def test_unsupported_citations_trigger_one_regeneration_then_abstain(world):
     assert result["abstain_reason"] == "unverified_citations"
     assert verifier.calls == 2, "one regeneration, then stop"
     assert result["regeneration_count"] == 1
+
+
+def test_regeneration_receives_prior_draft_and_verifier_feedback(world):
+    """The bounded retry must revise the rejected draft, not repeat it blind."""
+    verifier = StubVerifier(supported=False)
+
+    run(world, verifier=verifier)
+
+    first, second = world["generation_calls"]
+    assert first["previous_answer"] == ""
+    assert first["verification_feedback"] == ""
+    assert second["previous_answer"] == world["answer"].answer
+    assert "stubbed" in second["verification_feedback"]
 
 
 def test_supported_citations_finalise_the_answer(world):

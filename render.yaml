@@ -1,0 +1,95 @@
+# Render Blueprint for the production RAGuard stack.
+# Region `ohio` is colocated with the configured Neon us-east-2 endpoint.
+services:
+  - type: keyvalue
+    name: raguard-admission-fahim03
+    plan: free
+    region: ohio
+    ipAllowList: []
+    maxmemoryPolicy: noeviction
+    persistenceMode: off
+
+  - type: web
+    name: raguard-api-fahim03
+    runtime: docker
+    plan: pro plus
+    region: ohio
+    repo: https://github.com/fahim0-3/RAGuard
+    branch: main
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    autoDeployTrigger: checksPass
+    healthCheckPath: /health
+    maxShutdownDelaySeconds: 300
+    numInstances: 1
+    disk:
+      name: raguard-model-cache
+      mountPath: /models
+      sizeGB: 5
+    envVars:
+      - key: RAGUARD_ENVIRONMENT
+        value: production
+      - key: RAGUARD_RUNTIME_PROFILE
+        value: local_compact
+      - key: API_HOST
+        value: 0.0.0.0
+      - key: API_BASE_URL
+        value: https://raguard-api-fahim03.onrender.com
+      - key: CORS_ALLOW_ORIGINS
+        value: https://raguard-ui-fahim03.onrender.com
+      - key: HF_HOME
+        value: /models
+      - key: MODEL_DEVICE
+        value: cpu
+      - key: RERANKER_DEVICE
+        value: cpu
+      - key: HF_HUB_DISABLE_XET
+        value: "1"
+      - key: DISABLE_SAFETENSORS_CONVERSION
+        value: "1"
+      - key: DATABASE_URL
+        sync: false
+      - key: LLM_PROVIDER
+        value: gemini
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: ADMIN_API_KEY
+        generateValue: true
+      - key: ADMISSION_BACKEND
+        value: redis
+      - key: ADMISSION_REDIS_URL
+        fromService:
+          type: keyvalue
+          name: raguard-admission-fahim03
+          property: connectionString
+      - key: QUERY_MAX_CONCURRENCY
+        value: "2"
+      - key: QUERY_RATE_LIMIT_PER_MINUTE
+        value: "20"
+      - key: ADMISSION_LEASE_SECONDS
+        value: "300"
+      - key: DB_POOL_TIMEOUT_S
+        value: "10"
+      - key: DB_CONNECT_TIMEOUT_S
+        value: "10"
+      - key: DB_RECONNECT_TIMEOUT_S
+        value: "30"
+      - key: OTEL_SERVICE_NAME
+        value: raguard-api
+
+  - type: web
+    name: raguard-ui-fahim03
+    runtime: docker
+    plan: free
+    region: ohio
+    repo: https://github.com/fahim0-3/RAGuard
+    branch: main
+    dockerfilePath: ./Dockerfile.frontend
+    dockerContext: .
+    autoDeployTrigger: checksPass
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: API_BASE_URL
+        value: https://raguard-api-fahim03.onrender.com
+      - key: API_TIMEOUT_S
+        value: "180"

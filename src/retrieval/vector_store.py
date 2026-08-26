@@ -44,7 +44,15 @@ def get_pool() -> ConnectionPool:
                     conninfo=settings.database_url,
                     min_size=1,
                     max_size=8,
+                    timeout=settings.db_pool_timeout_s,
+                    reconnect_timeout=settings.db_reconnect_timeout_s,
+                    kwargs={"connect_timeout": settings.db_connect_timeout_s},
                     configure=_configure,
+                    # Managed databases such as Neon can close an idle
+                    # connection while a local embedding model is loading.
+                    # Validate on checkout so the pool replaces a dead socket
+                    # before application SQL sees it.
+                    check=ConnectionPool.check_connection,
                     open=True,
                 )
     return _pool

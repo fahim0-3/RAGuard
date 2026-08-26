@@ -210,7 +210,8 @@ def build_report(layers: dict[str, dict[str, Any]], suite: GateSuite) -> dict[st
             "generation_model": settings.llm_model or settings.gemini_model,
             "judge_model": settings.gemini_judge_model,
             "embedding_model": settings.embedding_model,
-            "reranker_model": settings.reranker_model,
+            "runtime_profile": settings.runtime_profile,
+            "reranker_model": settings.resolved_reranker_model,
             "reranker_enabled": settings.reranker_enabled,
             "verifier_backend": settings.verifier_backend,
             "retrieval": {

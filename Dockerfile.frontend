@@ -5,23 +5,27 @@ FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PORT=8501 \
+    HEALTHCHECK_PATH=/_stcore/health
 
 WORKDIR /app
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/*
 
 # Only what the UI actually imports.
 RUN pip install --upgrade pip && pip install "streamlit>=1.32.0" "httpx>=0.27"
 
 COPY frontend/ ./frontend/
+COPY scripts/container_healthcheck.py ./scripts/container_healthcheck.py
+
+RUN addgroup --system --gid 10001 raguard \
+    && adduser --system --uid 10001 --ingroup raguard --home /home/raguard raguard \
+    && chown -R raguard:raguard /app /home/raguard
+
+USER 10001:10001
 
 EXPOSE 8501
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -fsS http://localhost:8501/_stcore/health || exit 1
+    CMD ["python", "-m", "scripts.container_healthcheck"]
 
-CMD ["streamlit", "run", "frontend/app.py", \
-     "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true"]
+CMD ["sh", "-c", "exec streamlit run frontend/app.py --server.address=0.0.0.0 --server.port=${PORT:-8501} --server.headless=true"]

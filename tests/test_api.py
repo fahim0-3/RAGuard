@@ -95,6 +95,10 @@ def client(monkeypatch):
     # says otherwise. Model lifecycle behavior has focused coverage in
     # test_model_readiness.py.
     monkeypatch.setattr("api.main.is_model_loaded", lambda: True)
+    monkeypatch.setattr("api.main.is_reranker_model_loaded", lambda: True)
+    monkeypatch.setattr(
+        "api.main.loaded_reranker_model_name", lambda: "test-reranker"
+    )
     from api.admission import query_admission
     from api.observability import runtime_metrics
 

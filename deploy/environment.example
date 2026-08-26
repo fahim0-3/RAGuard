@@ -1,0 +1,28 @@
+# Non-secret production contract. Put secret values in the cloud provider's
+# secret manager; never commit a populated copy of this file.
+RAGUARD_ENVIRONMENT=production
+RAGUARD_RUNTIME_PROFILE=local_compact
+API_HOST=0.0.0.0
+API_BASE_URL=https://api.example.com
+CORS_ALLOW_ORIGINS=https://app.example.com
+
+DATABASE_URL=postgresql://user:password@host/database?sslmode=require
+DB_POOL_TIMEOUT_S=10
+DB_CONNECT_TIMEOUT_S=10
+DB_RECONNECT_TIMEOUT_S=30
+
+LLM_PROVIDER=gemini
+GOOGLE_API_KEY=replace-in-secret-manager
+ADMIN_API_KEY=replace-with-at-least-32-random-characters
+
+ADMISSION_BACKEND=redis
+ADMISSION_REDIS_URL=rediss://user:password@host:6379/0
+QUERY_MAX_CONCURRENCY=4
+QUERY_RATE_LIMIT_PER_MINUTE=30
+
+OTEL_EXPORTER_OTLP_ENDPOINT=https://collector.example.com/v1/traces
+OTEL_SERVICE_NAME=raguard-api
+
+# Mount a remote persistent disk here. It stores model weights remotely, not
+# on the developer laptop.
+HF_HOME=/models

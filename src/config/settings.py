@@ -11,7 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -27,6 +27,22 @@ class Settings(BaseSettings):
     # --- Database ---
     database_url: str = "postgresql://raguard:raguard@localhost:5433/raguard"
     vector_dimension: int = 1024  # BGE-M3 dense output width.
+    # Bound API readiness and query waits during a managed-database outage.
+    # The pool retries connection creation in the background for longer than a
+    # single request is allowed to wait.
+    db_pool_timeout_s: float = Field(default=10.0, ge=1.0, le=60.0)
+    db_connect_timeout_s: int = Field(default=10, ge=1, le=60)
+    db_reconnect_timeout_s: float = Field(default=30.0, ge=5.0, le=300.0)
+
+    # --- Runtime environment ---
+    runtime_environment: Literal["development", "test", "production"] = Field(
+        default="development",
+        validation_alias=AliasChoices("RAGUARD_ENVIRONMENT", "runtime_environment"),
+    )
+    model_cache_dir: Path | None = Field(
+        default=None,
+        validation_alias=AliasChoices("HF_HOME", "model_cache_dir"),
+    )
 
     # --- LLM provider ---
     llm_provider: Literal["gemini", "ollama"] = "gemini"
@@ -57,6 +73,10 @@ class Settings(BaseSettings):
     llm_max_retries: int = Field(default=2, ge=0, le=5)
 
     # --- Local models ---
+    runtime_profile: Literal["full", "local_compact"] = Field(
+        default="full",
+        validation_alias=AliasChoices("RAGUARD_RUNTIME_PROFILE", "runtime_profile"),
+    )
     embedding_model: str = "BAAI/bge-m3"
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     # Used only when the primary reranker cannot be loaded. 22 M parameters
@@ -173,6 +193,13 @@ class Settings(BaseSettings):
     def resolved_reranker_device(self) -> str:
         """Configured cross-encoder device, falling back to MODEL_DEVICE."""
         return self.reranker_device.strip() or self.model_device
+
+    @property
+    def resolved_reranker_model(self) -> str:
+        """Return the profile-selected cross-encoder model."""
+        if self.runtime_profile == "local_compact":
+            return self.reranker_fallback_model
+        return self.reranker_model
 
 
 @lru_cache(maxsize=1)

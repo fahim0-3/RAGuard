@@ -1,0 +1,131 @@
+name: Production release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish_images:
+        description: "Publish immutable images to GHCR"
+        type: boolean
+        default: false
+      api_url:
+        description: "Optional deployed API URL for post-deployment smoke check"
+        type: string
+        required: false
+      expected_profile:
+        description: "Expected deployed runtime profile"
+        type: choice
+        options: [local_compact, full]
+        default: local_compact
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: production-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-contract:
+    name: Release contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install contract-test dependencies
+        run: |
+          pip install pytest ruff pyyaml pydantic pydantic-settings python-dotenv \
+                      fastapi httpx "psycopg[binary]" psycopg-pool pgvector redis \
+                      langchain-core langchain-text-splitters langgraph rank-bm25 \
+                      opentelemetry-api opentelemetry-sdk \
+                      opentelemetry-exporter-otlp-proto-http
+      - run: ruff check api src scripts tests
+      - name: Run production contract tests
+        run: |
+          pytest tests/test_production_config.py \
+                 tests/test_production_preflight.py \
+                 tests/test_smoke_service.py \
+                 tests/test_deployment_contract.py \
+                 tests/test_model_readiness.py -q
+      - name: Exercise strict production preflight without network access
+        env:
+          RAGUARD_ENVIRONMENT: production
+          RAGUARD_RUNTIME_PROFILE: local_compact
+          DATABASE_URL: postgresql://ci:ci@db.example.net/raguard?sslmode=require
+          LLM_PROVIDER: ollama
+          OLLAMA_BASE_URL: https://ollama.example.net
+          ADMIN_API_KEY: ci-admin-key-value-with-more-than-32-characters
+          CORS_ALLOW_ORIGINS: https://app.example.net
+          API_BASE_URL: https://api.example.net
+          API_HOST: 0.0.0.0
+          ADMISSION_BACKEND: redis
+          ADMISSION_REDIS_URL: rediss://redis.example.net:6379/0
+          OTEL_EXPORTER_OTLP_ENDPOINT: https://otel.example.net/v1/traces
+          HF_HOME: /models
+        run: python -m scripts.production_preflight
+
+  images:
+    name: Build production images remotely
+    needs: release-contract
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - component: api
+            dockerfile: Dockerfile
+          - component: frontend
+            dockerfile: Dockerfile.frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GitHub Container Registry
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish_images
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/raguard-${{ matrix.component }}
+          tags: |
+            type=sha,format=long
+            type=ref,event=tag
+      - name: Build and optionally publish
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.publish_images }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+
+  smoke:
+    name: Post-deployment smoke check
+    if: github.event_name == 'workflow_dispatch' && inputs.api_url != ''
+    needs: images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install httpx
+      - name: Wait for the deployed API
+        env:
+          DEPLOYED_API_URL: ${{ inputs.api_url }}
+          EXPECTED_RUNTIME_PROFILE: ${{ inputs.expected_profile }}
+        run: |
+          python -m scripts.smoke_service \
+            --base-url "$DEPLOYED_API_URL" \
+            --expected-profile "$EXPECTED_RUNTIME_PROFILE" \
+            --deadline-s 600

@@ -58,8 +58,12 @@ __all__ = [
     "CrossEncoderReranker",
     "RerankResult",
     "get_reranker",
+    "is_reranker_model_loaded",
+    "loaded_reranker_model_name",
+    "reranker_model_load_error",
     "reset_reranker",
     "sigmoid",
+    "warmup_reranker_model",
 ]
 
 
@@ -110,7 +114,7 @@ class CrossEncoderReranker:
         model: Any | None = None,
     ) -> None:
         settings = get_settings()
-        self.model_name = model_name or settings.reranker_model
+        self.model_name = model_name or settings.resolved_reranker_model
         self.fallback_model_name = fallback_model_name or settings.reranker_fallback_model
         self.device = device or settings.resolved_reranker_device
         self.enabled = settings.reranker_enabled if enabled is None else enabled
@@ -202,6 +206,25 @@ class CrossEncoderReranker:
         return [float(score) for score in model.predict(pairs, **kwargs)]
 
     # -- public API --------------------------------------------------------
+
+    @property
+    def is_model_loaded(self) -> bool:
+        """Whether weights are resident; this probe never initiates a load."""
+        return self._model is not None
+
+    @property
+    def load_error(self) -> str | None:
+        return self._load_error
+
+    @property
+    def loaded_model_name(self) -> str | None:
+        return self._loaded_model_name
+
+    def warmup(self) -> bool:
+        """Load weights off the request path without allowing an exception out."""
+        if not self.enabled:
+            return True
+        return self._get_model() is not None
 
     def rerank_with_diagnostics(
         self,
@@ -319,3 +342,26 @@ def reset_reranker() -> None:
     global _reranker
     with _lock:
         _reranker = None
+
+
+def warmup_reranker_model() -> bool:
+    """Load the configured reranker once and record failures for readiness."""
+    loaded = get_reranker().warmup()
+    if loaded:
+        logger.info("Reranker model ready")
+    return loaded
+
+
+def is_reranker_model_loaded() -> bool:
+    """Readiness probe that does not itself load model weights."""
+    return get_reranker().is_model_loaded
+
+
+def reranker_model_load_error() -> str | None:
+    """Return the recorded load error; callers must sanitise it before output."""
+    return get_reranker().load_error
+
+
+def loaded_reranker_model_name() -> str | None:
+    """Return the actual resident model, if warm-up has completed."""
+    return get_reranker().loaded_model_name

@@ -21,9 +21,9 @@ Two boundaries are enforced here rather than trusted:
   connection string or a prompt, so clients receive a category and a request ID
   while the detail goes to the log.
 
-The embedding model is warmed in a background thread at start-up, so the
-first user query does not sit inside a multi-gigabyte download. `/ready` stays
-503 until that finishes; `/health` never waits on it.
+The embedding and reranker models are warmed in background threads at start-up,
+so the first user query does not sit inside a model download. `/ready` stays
+503 until the enabled model stack is resident; `/health` never waits on it.
 """
 
 from __future__ import annotations
@@ -61,8 +61,19 @@ from api.tracing import (
     shutdown_tracing,
     start_request_span,
 )
-from src.config import Settings, get_settings
+from src.config import (
+    Settings,
+    enforce_production_configuration,
+    enforce_production_runtime_storage,
+    get_settings,
+)
 from src.generation.llm_factory import LLMProviderError
+from src.reranking import (
+    is_reranker_model_loaded,
+    loaded_reranker_model_name,
+    reranker_model_load_error,
+    warmup_reranker_model,
+)
 from src.retrieval.bm25 import get_bm25_index, refresh_bm25_index
 from src.retrieval.embeddings import (
     is_model_loaded,
@@ -84,7 +95,13 @@ CITATION_EXCERPT_CHARS = 400
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    configure_tracing(get_settings())
+    settings = get_settings()
+    preflight = enforce_production_configuration(settings)
+    if settings.runtime_environment == "production":
+        enforce_production_runtime_storage(settings)
+        for warning in preflight.warnings:
+            logger.warning("Production preflight recommendation: %s", warning.code)
+    configure_tracing(settings)
     try:
         init_schema()
         logger.info("Connected to pgvector, %d chunks indexed", count_chunks())
@@ -102,12 +119,11 @@ async def lifespan(app: FastAPI):
     # health check while warming, and `SentenceTransformer(...)` is synchronous
     # so awaiting it would block the event loop entirely. `/ready` is the gate
     # that stays closed until this finishes.
-    warmup = threading.Thread(
-        target=warmup_embedding_model,
-        name="embedding-warmup",
-        daemon=True,
-    )
-    warmup.start()
+    for target, name in (
+        (warmup_embedding_model, "embedding-warmup"),
+        (warmup_reranker_model, "reranker-warmup"),
+    ):
+        threading.Thread(target=target, name=name, daemon=True).start()
 
     yield
     close_pool()
@@ -375,7 +391,34 @@ def ready(settings: SettingsDep, response: JSONResponse = None) -> Any:  # noqa:
             else "embedding model still loading (first start downloads ~2.2 GB)"
         )
 
-    checks["retrieval"] = {"strategy": "hybrid_bm25_dense_rrf", "reranker": settings.reranker_model}
+    if not settings.reranker_enabled:
+        checks["reranker_model"] = {
+            "status": "disabled",
+            "model": settings.resolved_reranker_model,
+            "device": settings.resolved_reranker_device,
+        }
+    elif is_reranker_model_loaded():
+        checks["reranker_model"] = {
+            "status": "loaded",
+            "model": loaded_reranker_model_name() or settings.resolved_reranker_model,
+            "device": settings.resolved_reranker_device,
+        }
+    else:
+        error = reranker_model_load_error()
+        checks["reranker_model"] = {
+            "status": "failed" if error else "loading",
+            "model": settings.resolved_reranker_model,
+            "device": settings.resolved_reranker_device,
+            "error": error.split(":")[0] if error else None,
+        }
+        problems.append(
+            "reranker model failed to load" if error else "reranker model still loading"
+        )
+
+    checks["retrieval"] = {
+        "strategy": "hybrid_bm25_dense_rrf",
+        "reranker": settings.resolved_reranker_model,
+    }
 
     if problems:
         return JSONResponse(
@@ -602,18 +645,16 @@ def reindex(_admin: AdminDep) -> dict[str, int]:
 
 
 @app.post("/admin/warmup")
-def warmup(_admin: AdminDep) -> dict[str, str]:
+def warmup(_admin: AdminDep, settings: SettingsDep) -> dict[str, str]:
     """Load the embedding and reranker models ahead of the first user request."""
-    from src.reranking import get_reranker
-    from src.retrieval.embeddings import get_embedding_model
-    from src.retrieval.types import RetrievedChunk
-
-    get_embedding_model()
-    # A non-empty list is required, otherwise rerank short-circuits and the
-    # cross-encoder is never actually loaded.
-    dummy = RetrievedChunk(chunk_id=-1, content="warmup", source="warmup", chunk_index=0)
-    get_reranker().rerank("warmup", [dummy])
+    embedding_ready = warmup_embedding_model()
+    reranker_ready = not settings.reranker_enabled or warmup_reranker_model()
     get_bm25_index()
+    if not embedding_ready or not reranker_ready:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="model warm-up failed; inspect server logs and /ready",
+        )
     return {"status": "warm"}
 
 
@@ -641,13 +682,16 @@ def config(settings: SettingsDep) -> dict[str, Any]:
     """Non-secret configuration, for reproducing a run. Never includes a key."""
     return {
         "api_version": API_VERSION,
+        "runtime_environment": settings.runtime_environment,
+        "runtime_profile": settings.runtime_profile,
         "llm_provider": settings.llm_provider,
         "generation_model": (
             settings.llm_model
             or (settings.gemini_model if settings.llm_provider == "gemini" else settings.ollama_model)
         ),
         "embedding_model": settings.embedding_model,
-        "reranker_model": settings.reranker_model,
+        "reranker_model": settings.resolved_reranker_model,
+        "configured_full_reranker_model": settings.reranker_model,
         "reranker_device": settings.resolved_reranker_device,
         "chunk_size": settings.chunk_size,
         "chunk_overlap": settings.chunk_overlap,
