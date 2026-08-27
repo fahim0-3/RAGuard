@@ -16,7 +16,18 @@ def test_project_metadata_is_the_single_dependency_source_of_truth():
     config = _pyproject()
 
     assert config["project"]["dependencies"]
-    assert {"dev", "evaluation", "frontend"} <= set(config["dependency-groups"])
+    assert {"dev", "evaluation", "frontend", "local-models"} <= set(
+        config["dependency-groups"]
+    )
+
+
+def test_local_model_stack_is_optional_for_hosted_embedding_runtimes():
+    config = _pyproject()
+    runtime = set(config["project"]["dependencies"])
+    local_models = set(config["dependency-groups"]["local-models"])
+
+    assert not any(dependency.startswith("torch") for dependency in runtime)
+    assert any(dependency.startswith("torch") for dependency in local_models)
 
 
 def test_torch_is_resolved_from_the_cpu_wheel_index():

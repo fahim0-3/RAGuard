@@ -14,4 +14,4 @@ chmod 0777 "${data_dir}" "${data_dir}/models" "${data_dir}/postgres"
 if ! command -v uv >/dev/null 2>&1; then
     python -m pip install --user "uv==0.11.6"
 fi
-uv sync --locked --all-groups
+uv sync --locked

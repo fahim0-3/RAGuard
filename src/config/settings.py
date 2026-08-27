@@ -76,7 +76,11 @@ class Settings(BaseSettings):
     llm_request_timeout_s: int = Field(default=60, ge=1)
     llm_max_retries: int = Field(default=2, ge=0, le=5)
 
-    # --- Local models ---
+    # --- Embeddings and local models ---
+    # `gemini` keeps all embedding inference hosted, so it needs no PyTorch or
+    # Hugging Face model cache. Documents must be re-ingested after switching.
+    embedding_provider: Literal["local", "gemini"] = "local"
+    gemini_embedding_model: str = "gemini-embedding-001"
     runtime_profile: Literal["full", "local_compact"] = Field(
         default="full",
         validation_alias=AliasChoices("RAGUARD_RUNTIME_PROFILE", "runtime_profile"),
@@ -185,6 +189,11 @@ class Settings(BaseSettings):
             raise ValueError(
                 "graph_request_timeout_s must be lower than admission_lease_seconds"
             )
+        if self.embedding_provider == "gemini":
+            # Hosted embeddings remove the local sentence-transformers stack.
+            # Keep reranking hosted-only as well rather than silently pulling a
+            # cross-encoder into a supposedly model-free runtime.
+            self.reranker_enabled = False
         return self
 
     @property

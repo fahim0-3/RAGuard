@@ -227,6 +227,14 @@ For the full-quality 4.4 GB pair, start the API with
 remains in Neon; only cached model weights and the Codespaces Python environment
 occupy the remote workspace.
 
+#### Hosted Gemini embeddings (no model download)
+
+Set `EMBEDDING_PROVIDER=gemini` in a secret-backed environment. RAGuard then
+uses `gemini-embedding-001` at the configured 1024 dimensions and disables the
+local reranker, so it requires neither PyTorch nor a Hugging Face cache. Because
+embedding spaces are not interchangeable, re-ingest the corpus once after this
+switch; it replaces the existing BGE-M3 vectors with Gemini vectors.
+
 #### Docker Compose in Codespaces (optional)
 
 Use this only when you specifically want the Docker topology (PostgreSQL,

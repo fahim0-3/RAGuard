@@ -17,7 +17,7 @@ WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-default-groups --no-install-project --no-editable
+    uv sync --locked --no-default-groups --group local-models --no-install-project --no-editable
 
 COPY src/ ./src/
 COPY api/ ./api/
