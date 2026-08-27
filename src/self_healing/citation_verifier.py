@@ -34,6 +34,10 @@ from src.generation.prompts import (
 from src.retrieval.bm25 import tokenize
 from src.retrieval.types import RetrievedChunk
 from src.self_healing.claims import extract_claims
+from src.self_healing.execution_budget import (
+    ExecutionBudgetExceeded,
+    reserve_llm_call,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,16 +115,33 @@ def missing_factual_tokens(claim: str, passage: str) -> list[str]:
     return [fact for fact in facts if fact not in passage_upper]
 
 
-def _build_entailment_chain():
+def _build_entailment_chain(
+    *, timeout_s: float | None = None, max_retries: int | None = None
+):
     prompt = ChatPromptTemplate.from_messages(
         [("system", CITATION_CHECK_SYSTEM_PROMPT), ("human", CITATION_CHECK_HUMAN_PROMPT)]
     ).partial(output_schema=ENTAILMENT_OUTPUT_SCHEMA)
-    return prompt | get_chat_model("judge") | JsonOutputParser()
+    return (
+        prompt
+        | get_chat_model("judge", timeout_s=timeout_s, max_retries=max_retries)
+        | JsonOutputParser()
+    )
 
 
 def _llm_supports(claim: str, passage: str) -> bool | None:
+    settings = get_settings()
+    permit = reserve_llm_call(
+        "verify_citations",
+        default_timeout_s=settings.llm_request_timeout_s,
+        default_max_retries=settings.llm_max_retries,
+    )
     try:
-        raw = _build_entailment_chain().invoke({"claim": claim, "passage": passage[:2000]})
+        raw = _build_entailment_chain(
+            timeout_s=permit.timeout_s,
+            max_retries=permit.max_retries,
+        ).invoke({"claim": claim, "passage": passage[:2000]})
+    except ExecutionBudgetExceeded:
+        raise
     except Exception:
         logger.warning("Entailment check failed; falling back to lexical verdict")
         return None

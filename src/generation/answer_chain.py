@@ -198,14 +198,22 @@ def validate_claim_citations(
 # --------------------------------------------------------------------------
 
 
-def build_answer_chain() -> Any:
+def build_answer_chain(
+    *, timeout_s: float | None = None, max_retries: int | None = None
+) -> Any:
     from langchain_core.output_parsers import JsonOutputParser
     from langchain_core.prompts import ChatPromptTemplate
 
     prompt = ChatPromptTemplate.from_messages(
         [("system", ANSWER_SYSTEM_PROMPT), ("human", ANSWER_HUMAN_PROMPT)]
     ).partial(output_schema=ANSWER_OUTPUT_SCHEMA)
-    return prompt | get_chat_model("generator") | JsonOutputParser()
+    return (
+        prompt
+        | get_chat_model(
+            "generator", timeout_s=timeout_s, max_retries=max_retries
+        )
+        | JsonOutputParser()
+    )
 
 
 def _failure(
@@ -240,6 +248,8 @@ def generate_grounded_answer(
     chain: Any | None = None,
     previous_answer: str = "",
     verification_feedback: str = "",
+    llm_timeout_s: float | None = None,
+    llm_max_retries: int | None = None,
 ) -> AnswerResponse:
     """Answer `question` using only `chunks`, validated end to end.
 
@@ -254,7 +264,14 @@ def generate_grounded_answer(
         )
 
     try:
-        chain = chain if chain is not None else build_answer_chain()
+        if chain is None:
+            chain = (
+                build_answer_chain()
+                if llm_timeout_s is None and llm_max_retries is None
+                else build_answer_chain(
+                    timeout_s=llm_timeout_s, max_retries=llm_max_retries
+                )
+            )
     except LLMProviderError as exc:
         logger.error("Generator unavailable: %s", exc)
         return _failure(question, "provider_error", "language model provider unavailable", supplied)

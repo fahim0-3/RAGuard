@@ -545,6 +545,23 @@ def test_summary_contains_no_prompt_text_or_credentials(world):
         assert secret not in blob
 
 
+def test_llm_call_budget_is_shared_across_graph_retries(world, monkeypatch):
+    settings = graph_module.get_settings().model_copy(
+        update={"graph_llm_call_limit": 2, "graph_request_timeout_s": 120}
+    )
+    monkeypatch.setattr(graph_module, "get_settings", lambda: settings)
+    world["grades"] = [INSUFFICIENT, SUFFICIENT]
+
+    result = run(world)
+
+    assert result["final_outcome"] == "abstain"
+    assert result["failure_reason"] == "request_budget_exhausted"
+    assert result["budget_exhausted"] is True
+    assert result["budget_exhaustion_reason"] == "llm_call_limit"
+    assert result["llm_calls_used"] == result["llm_call_limit"] == 2
+    assert world["generation_calls"] == []
+
+
 # --------------------------------------------------------------------------
 # 15. EvidenceGrade validation
 # --------------------------------------------------------------------------

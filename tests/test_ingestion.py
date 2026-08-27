@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import pytest
 
+import src.ingestion.ingest as ingestion
 from src.config import PROJECT_ROOT, get_settings
 from src.ingestion.ingest import _build_splitter, _extract_headings, _split_document
 
@@ -184,3 +185,42 @@ def test_whole_corpus_text_is_preserved_in_substance():
             if len(stripped) < 25 or stripped.startswith("#"):
                 continue
             assert stripped in joined, f"{filename} lost content: {stripped[:60]!r}"
+
+
+def test_reset_ingestion_replaces_a_source_through_one_atomic_operation(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "policy.txt"
+    path.write_text("ignored by the patched splitter", encoding="utf-8")
+    records = [
+        {
+            "source": path.name,
+            "doc_id": "POL-001",
+            "chunk_index": 0,
+            "content": "Policy text",
+            "metadata": {},
+        }
+    ]
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(ingestion, "_split_document", lambda _path: records)
+    monkeypatch.setattr(ingestion, "embed_texts", lambda _texts: [[0.0] * 3])
+    monkeypatch.setattr(
+        ingestion,
+        "insert_chunks",
+        lambda _records: (_ for _ in ()).throw(
+            AssertionError("reset must not commit a separate insert")
+        ),
+    )
+
+    def replace(source, embedded_records):
+        calls.append((source, embedded_records))
+        return 2, len(embedded_records)
+
+    monkeypatch.setattr(ingestion, "replace_source_chunks", replace, raising=False)
+
+    written = ingestion.ingest_file(path, reset=True)
+
+    assert written == 1
+    assert calls == [(path.name, records)]
+    assert records[0]["embedding"] == [0.0] * 3

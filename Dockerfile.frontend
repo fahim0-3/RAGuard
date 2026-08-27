@@ -5,14 +5,18 @@ FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
     PORT=8501 \
-    HEALTHCHECK_PATH=/_stcore/health
+    HEALTHCHECK_PATH=/_stcore/health \
+    PATH="/app/.venv/bin:$PATH"
 
 WORKDIR /app
 
-# Only what the UI actually imports.
-RUN pip install --upgrade pip && pip install "streamlit>=1.32.0" "httpx>=0.27"
+# Install only the locked frontend group. `--only-group` deliberately excludes
+# the API/model runtime, keeping this image small.
+COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --only-group frontend --no-install-project --no-editable
 
 COPY frontend/ ./frontend/
 COPY scripts/container_healthcheck.py ./scripts/container_healthcheck.py

@@ -63,6 +63,35 @@ def validate_production_settings(settings: Settings) -> PreflightReport:
                 )
             )
 
+    if settings.database_admin_url.strip():
+        admin_database = urlparse(settings.database_admin_url)
+        if (
+            admin_database.scheme not in {"postgres", "postgresql"}
+            or not admin_database.hostname
+        ):
+            errors.append(
+                PreflightIssue(
+                    "database_admin_url_invalid",
+                    "DATABASE_ADMIN_URL must be PostgreSQL when configured.",
+                )
+            )
+        else:
+            if admin_database.hostname.lower() in LOCAL_HOSTS:
+                errors.append(
+                    PreflightIssue(
+                        "database_admin_url_local",
+                        "Production DATABASE_ADMIN_URL must be remote.",
+                    )
+                )
+            admin_sslmode = parse_qs(admin_database.query).get("sslmode", [""])[0].lower()
+            if admin_sslmode not in {"require", "verify-ca", "verify-full"}:
+                errors.append(
+                    PreflightIssue(
+                        "database_admin_tls_required",
+                        "Production DATABASE_ADMIN_URL must enforce TLS with sslmode.",
+                    )
+                )
+
     if settings.llm_provider == "gemini":
         key = settings.google_api_key or ""
         if len(key) < 20 or _is_placeholder(key):

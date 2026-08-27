@@ -29,10 +29,10 @@ from src.config import get_settings
 from src.retrieval.bm25 import refresh_bm25_index
 from src.retrieval.embeddings import embed_texts
 from src.retrieval.vector_store import (
-    clear_source,
     count_chunks,
     init_schema,
     insert_chunks,
+    replace_source_chunks,
 )
 
 logger = logging.getLogger(__name__)
@@ -115,11 +115,11 @@ def ingest_file(path: Path, reset: bool = True) -> int:
         record["embedding"] = embedding
 
     if reset:
-        removed = clear_source(path.name)
+        removed, written = replace_source_chunks(path.name, records)
         if removed:
             logger.info("Cleared %d existing chunks for %s", removed, path.name)
-
-    written = insert_chunks(records)
+    else:
+        written = insert_chunks(records)
     logger.info("Ingested %s -> %d chunks", path.name, written)
     return written
 

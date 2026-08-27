@@ -7,6 +7,8 @@ API_BASE_URL=https://api.example.com
 CORS_ALLOW_ORIGINS=https://app.example.com
 
 DATABASE_URL=postgresql://user:password@host/database?sslmode=require
+GRAPH_REQUEST_TIMEOUT_S=150
+GRAPH_LLM_CALL_LIMIT=8
 DB_POOL_TIMEOUT_S=10
 DB_CONNECT_TIMEOUT_S=10
 DB_RECONNECT_TIMEOUT_S=30

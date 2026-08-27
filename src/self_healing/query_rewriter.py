@@ -80,11 +80,17 @@ def heuristic_rewrites(question: str, n_variants: int) -> list[str]:
     return deduped[:n_variants]
 
 
-def _build_rewrite_chain():
+def _build_rewrite_chain(
+    *, timeout_s: float | None = None, max_retries: int | None = None
+):
     prompt = ChatPromptTemplate.from_messages(
         [("system", QUERY_REWRITE_SYSTEM_PROMPT), ("human", QUERY_REWRITE_HUMAN_PROMPT)]
     ).partial(output_schema=REWRITE_OUTPUT_SCHEMA)
-    return prompt | get_chat_model("rewriter") | JsonOutputParser()
+    return (
+        prompt
+        | get_chat_model("rewriter", timeout_s=timeout_s, max_retries=max_retries)
+        | JsonOutputParser()
+    )
 
 
 def rewrite_query(
@@ -92,6 +98,8 @@ def rewrite_query(
     weak_chunks: list[RetrievedChunk] | None = None,
     n_variants: int | None = None,
     use_llm: bool = True,
+    llm_timeout_s: float | None = None,
+    llm_max_retries: int | None = None,
 ) -> list[str]:
     """Return alternative queries, excluding the original.
 
@@ -111,7 +119,14 @@ def rewrite_query(
         weak_context = weak_chunks[0].content[:600]
 
     try:
-        raw = _build_rewrite_chain().invoke(
+        chain = (
+            _build_rewrite_chain()
+            if llm_timeout_s is None and llm_max_retries is None
+            else _build_rewrite_chain(
+                timeout_s=llm_timeout_s, max_retries=llm_max_retries
+            )
+        )
+        raw = chain.invoke(
             {
                 "question": question,
                 "weak_context": weak_context,
@@ -209,6 +224,8 @@ def rewrite_once(
     missing_information: list[str] | None = None,
     weak_chunks: list[RetrievedChunk] | None = None,
     use_llm: bool = True,
+    llm_timeout_s: float | None = None,
+    llm_max_retries: int | None = None,
 ) -> str:
     """Return exactly one rewritten query for a single retry.
 
@@ -225,7 +242,12 @@ def rewrite_once(
     seeded = f"{question} {hint}".strip() if hint else question
 
     variants = rewrite_query(
-        seeded, weak_chunks=weak_chunks, n_variants=1, use_llm=use_llm
+        seeded,
+        weak_chunks=weak_chunks,
+        n_variants=1,
+        use_llm=use_llm,
+        llm_timeout_s=llm_timeout_s,
+        llm_max_retries=llm_max_retries,
     )
     candidate = variants[0] if variants else heuristic_first(question)
     return _restore_protected(question, candidate)

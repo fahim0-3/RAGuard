@@ -1,20 +1,14 @@
-"""RAGAS evaluation, and an honest answer when RAGAS cannot run.
+"""RAGAS evaluation with an honest unavailable/failure state.
 
-RAGAS is optional and, in this environment, currently unusable: version 0.4.3
-(the latest on PyPI) imports `langchain_community.chat_models.vertexai` at
-module load, and `langchain-community` 0.4.x removed that module during its
-sunset. There is no newer RAGAS to upgrade to, and downgrading
-`langchain-community` would drag `langchain-core` back from the 1.5 line that
-Phases E through H are built on.
+RAGAS is an optional, locked evaluation dependency. RAGAS 0.4.3 is paired with
+``langchain-community`` 0.4.1 because 0.4.2 removed a VertexAI module that RAGAS
+still imports. This pair is import-tested alongside the current LangChain 1.x
+runtime; the availability probe still protects minimal API and frontend
+installations where the evaluation group is deliberately absent.
 
-So this module probes availability and reports `RAGAS_NOT_AVAILABLE` with the
-exact import error. It does not approximate the metrics with something simpler
-and call them RAGAS scores: a number labelled "faithfulness" that a different
-implementation produced is worse than no number, because it looks comparable to
-published figures and is not.
-
-The dataset adapter lives in `ragas_adapter` and is fully testable without
-RAGAS installed, so the work that Phase I can validate is validated.
+This module never substitutes a different implementation and labels its output
+as RAGAS. A missing dependency or judge failure therefore remains visible as
+an unvalidated layer rather than becoming a fabricated score.
 """
 
 from __future__ import annotations
@@ -135,10 +129,9 @@ def run_ragas_evaluation(
             "metrics": {},
             "metric_status": {m["metric"]: "UNVALIDATED" for m in RAGAS_METRIC_PLAN},
             "remediation": (
-                "ragas 0.4.3 imports langchain_community.chat_models.vertexai, removed "
-                "in langchain-community 0.4.x. No newer ragas exists. Resolving this "
-                "requires either an upstream ragas fix or pinning the langchain stack "
-                "below 0.4/1.5, which would affect Phases E-H."
+                "Install the locked evaluation group with "
+                "`uv sync --locked --group evaluation`; inspect availability.reason "
+                "if the compatible RAGAS import still fails."
             ),
             "latency_ms": round((time.perf_counter() - started) * 1000.0, 1),
         }
@@ -152,8 +145,7 @@ def run_ragas_evaluation(
             "latency_ms": round((time.perf_counter() - started) * 1000.0, 1),
         }
 
-    # Reached only where RAGAS imports cleanly. Kept thin on purpose: this path
-    # has never executed in this environment, so it must not pretend otherwise.
+    # Reached only where the locked optional dependency imports cleanly.
     try:
         from ragas import EvaluationDataset, evaluate
         from ragas.llms import LangchainLLMWrapper

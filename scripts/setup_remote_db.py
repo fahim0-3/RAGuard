@@ -11,16 +11,13 @@ import sys
 
 import psycopg
 
-from src.config import get_settings
+from src.retrieval.vector_store import enable_vector_extension
 
 
 def main() -> int:
     """Enable pgvector without printing connection metadata or credentials."""
-    settings = get_settings()
     try:
-        with psycopg.connect(settings.database_url, connect_timeout=10) as conn:
-            conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            conn.commit()
+        enable_vector_extension()
     except psycopg.Error as exc:
         print(f"Database setup failed ({type(exc).__name__}).", file=sys.stderr)
         return 1

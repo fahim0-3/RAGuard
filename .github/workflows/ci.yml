@@ -26,12 +26,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
-      - run: pip install ruff
-      - run: ruff check .
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked --no-default-groups --only-group dev --no-install-project
+      - run: uv run --frozen --no-sync ruff check .
       - name: Formatting (advisory)
         continue-on-error: true
-        run: ruff format --diff .
+        run: uv run --frozen --no-sync ruff format --diff .
 
   fast-tests:
     name: Fast tests (no models, no database)
@@ -41,7 +43,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
       - name: Install fast-tier dependencies
         # Deliberately avoids torch: this job must stay under a minute so that
         # dataset-integrity and guard-logic failures are reported immediately.
@@ -54,21 +58,14 @@ jobs:
         # `vector_store`, which imports psycopg, psycopg_pool, and
         # pgvector.psycopg at module scope. Importing is not connecting.
         # Likewise `tests/test_ingestion.py` reaches langchain_text_splitters
-        # through `src.ingestion.ingest`. Every package here is already pinned
-        # in requirements.txt; this list is the torch-free subset of it, not a
-        # second source of truth.
-        run: |
-          pip install pytest pydantic pydantic-settings python-dotenv \
-                      langchain-core langchain-text-splitters rank-bm25 \
-                      langgraph jsonschema fastapi httpx pyyaml \
-                      "psycopg[binary]" psycopg-pool pgvector redis \
-                      opentelemetry-api opentelemetry-sdk \
-                      opentelemetry-exporter-otlp-proto-http
+        # through `src.ingestion.ingest`. The dev/frontend groups are resolved
+        # in the same lock as production, but intentionally omit torch.
+        run: uv sync --locked --no-default-groups --only-group dev --only-group frontend --no-install-project
       - name: Run fast tier
         # `not slow` is redundant today (every slow test is also heavy) but is
         # stated so the gate does not silently acquire a 40-minute job if that
         # pairing is ever broken.
-        run: pytest -m "not integration and not heavy and not llm and not slow" -v
+        run: uv run --frozen --no-sync pytest -m "not integration and not heavy and not llm and not slow" -v
 
   evaluation-gate:
     name: Golden dataset regression gate
@@ -100,7 +97,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
 
       - name: Cache Hugging Face weights
         # BGE-M3 and the reranker are roughly 4.5 GB combined. Without this
@@ -111,10 +110,7 @@ jobs:
           key: hf-${{ runner.os }}-bge-m3-reranker-v2-m3-v1
 
       - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements.txt
+        run: uv sync --locked --no-default-groups --group dev
 
       - name: Enable pgvector extension
         # The pgvector image ships the extension but does not enable it in any
@@ -133,20 +129,20 @@ jobs:
         run: psql -h localhost -p 5432 -U raguard -d raguard -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
       - name: Ingest corpus
-        run: python -m src.ingestion.ingest --reset
+        run: uv run --frozen --no-sync python -m src.ingestion.ingest --reset
 
       - name: Run deterministic retrieval evaluation
         # The retrieval layer measures BM25 + dense + RRF only. It does not load
         # the cross-encoder: reranking is a separate, heavy benchmark and has no
         # place in a per-PR gate.
         run: |
-          python -m src.evaluation.run_eval \
+          uv run --frozen --no-sync python -m src.evaluation.run_eval \
             --retrieval \
             --fail-on-regression \
             --output reports/ci_evaluation.json
 
       - name: Run integration tests
-        run: pytest -m "integration and not llm" -v
+        run: uv run --frozen --no-sync pytest -m "integration and not llm" -v
 
       - name: Upload evaluation report
         if: always()

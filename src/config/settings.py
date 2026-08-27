@@ -11,7 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -26,6 +26,10 @@ class Settings(BaseSettings):
 
     # --- Database ---
     database_url: str = "postgresql://raguard:raguard@localhost:5433/raguard"
+    # Optional direct/admin connection used only for extension and schema DDL.
+    # Leave empty to reuse DATABASE_URL (the normal local/direct setup). Keeping
+    # this separate lets a future pooled runtime URL avoid migration traffic.
+    database_admin_url: str = Field(default="", repr=False)
     vector_dimension: int = 1024  # BGE-M3 dense output width.
     # Bound API readiness and query waits during a managed-database outage.
     # The pool retries connection creation in the background for longer than a
@@ -137,6 +141,10 @@ class Settings(BaseSettings):
     # One regeneration after a failed citation check, then abstain.
     graph_max_regenerations: int = Field(default=1, ge=0, le=3)
     graph_use_llm: bool = True
+    # One wall-clock and provider-call budget spans grading, rewriting,
+    # generation, verification, and every graph retry.
+    graph_request_timeout_s: int = Field(default=150, ge=5, le=3_600)
+    graph_llm_call_limit: int = Field(default=8, ge=1, le=100)
 
     # --- Citation verification (Phase G) ---
     # "entailment" adds semantic checking; "deterministic" keeps the Phase F
@@ -171,9 +179,22 @@ class Settings(BaseSettings):
     otel_exporter_otlp_endpoint: str = ""
     otel_service_name: str = "raguard-api"
 
+    @model_validator(mode="after")
+    def _request_budget_fits_admission_lease(self) -> Settings:
+        if self.graph_request_timeout_s >= self.admission_lease_seconds:
+            raise ValueError(
+                "graph_request_timeout_s must be lower than admission_lease_seconds"
+            )
+        return self
+
     @property
     def cors_allow_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_allow_origins.split(",") if o.strip()]
+
+    @property
+    def schema_database_url(self) -> str:
+        """Direct connection used for extension and schema administration."""
+        return self.database_admin_url.strip() or self.database_url
 
     @property
     def absolute_data_dir(self) -> Path:

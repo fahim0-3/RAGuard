@@ -529,6 +529,38 @@ def test_factory_guards_against_an_unregistered_provider(monkeypatch):
     llm_factory.reset_model_cache()
 
 
+def test_budgeted_model_uses_remaining_timeout_and_disables_hidden_retries(monkeypatch):
+    from src.config import Settings
+    from src.generation import llm_factory
+
+    captured = {}
+
+    def builder(role, *, timeout_s=None, max_retries=None):
+        captured.update(
+            role=role,
+            timeout_s=timeout_s,
+            max_retries=max_retries,
+        )
+        return object()
+
+    monkeypatch.setitem(llm_factory._BUILDERS, "gemini", builder)
+    monkeypatch.setattr(
+        llm_factory,
+        "get_settings",
+        lambda: Settings(_env_file=None, llm_provider="gemini"),
+    )
+    llm_factory.reset_model_cache()
+
+    llm_factory.get_chat_model("generator", timeout_s=12.5, max_retries=0)
+
+    assert captured == {
+        "role": "generator",
+        "timeout_s": 12.5,
+        "max_retries": 0,
+    }
+    llm_factory.reset_model_cache()
+
+
 @pytest.mark.parametrize(
     "error",
     [
@@ -771,5 +803,11 @@ def test_the_fix_did_not_leak_the_question_into_the_verifier():
     from src.self_healing.entailment import ENTAILMENT_HUMAN_PROMPT, judge_claim
 
     parameters = set(inspect.signature(judge_claim).parameters)
-    assert parameters == {"claim_text", "passage", "chain"}, parameters
+    assert parameters == {
+        "claim_text",
+        "passage",
+        "chain",
+        "llm_timeout_s",
+        "llm_max_retries",
+    }, parameters
     assert "question" not in ENTAILMENT_HUMAN_PROMPT.lower()

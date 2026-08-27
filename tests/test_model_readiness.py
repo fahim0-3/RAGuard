@@ -331,3 +331,43 @@ def test_startup_schedules_a_background_warmup(monkeypatch):
             time.sleep(0.05)
 
     assert sorted(calls) == ["reranked", "warmed"]
+
+
+def test_startup_skips_model_warmup_when_database_initialization_fails(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "api.main.init_schema",
+        lambda: (_ for _ in ()).throw(ConnectionError("database unavailable")),
+    )
+    monkeypatch.setattr(
+        "api.main.count_chunks",
+        lambda: (_ for _ in ()).throw(AssertionError("count must not run")),
+    )
+    monkeypatch.setattr(
+        "api.main.warmup_embedding_model", lambda: calls.append("warmed") or True
+    )
+    monkeypatch.setattr(
+        "api.main.warmup_reranker_model", lambda: calls.append("reranked") or True
+    )
+
+    with TestClient(app) as started_client:
+        assert started_client.get("/health").status_code == 200
+
+    assert calls == []
+
+
+def test_startup_skips_model_warmup_until_the_corpus_is_ingested(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr("api.main.init_schema", lambda: None)
+    monkeypatch.setattr("api.main.count_chunks", lambda: 0)
+    monkeypatch.setattr(
+        "api.main.warmup_embedding_model", lambda: calls.append("warmed") or True
+    )
+    monkeypatch.setattr(
+        "api.main.warmup_reranker_model", lambda: calls.append("reranked") or True
+    )
+
+    with TestClient(app) as started_client:
+        assert started_client.get("/health").status_code == 200
+
+    assert calls == []

@@ -4,19 +4,20 @@ FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
     HF_HOME=/models \
     HF_HUB_DISABLE_XET=1 \
     DISABLE_SAFETENSORS_CONVERSION=1 \
-    PORT=8000
+    PORT=8000 \
+    PATH="/app/.venv/bin:$PATH"
 
 WORKDIR /app
 
-ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
-COPY requirements-api.txt .
-RUN pip install --upgrade pip \
-    && pip install torch --index-url "${TORCH_INDEX_URL}" \
-    && pip install -r requirements-api.txt
+# The lock resolves PyTorch from its CPU-only index, preventing CUDA runtime
+# packages from entering either the image or the build cache.
+COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-default-groups --no-install-project --no-editable
 
 COPY src/ ./src/
 COPY api/ ./api/

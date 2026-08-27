@@ -80,20 +80,16 @@ fluent judge cannot wave through "3 to 5 business days" against evidence saying 
 
 ## Quick start
 
-**Python 3.11 or 3.12.** PyTorch and `sentence-transformers` wheels lag new CPython releases.
-Create the environment with an explicit interpreter.
+**Python 3.11 or 3.12.** Install `uv`, then create the complete environment
+from the committed cross-platform lock:
 
 ```bash
-py -3.12 -m venv .venv
+uv sync --locked --all-groups --python 3.12
 ```
 
-```bash
-.venv\Scripts\Activate.ps1
-```
-
-```bash
-pip install -r requirements.txt
-```
+Use `uv run --frozen --no-sync <command>` for reproducible commands. The
+PyTorch entry in `uv.lock` comes from the CPU-only wheel index, so local and
+container installs do not pull CUDA runtime packages.
 
 Start PostgreSQL with pgvector. The compose file mounts `docker/init-db.sql`, which enables the
 `vector` extension — the pgvector image ships it but does not enable it in any database.
@@ -115,17 +111,17 @@ and entailment verification need it.
 Ingest the corpus. The first run downloads roughly 2.2 GB of model weights.
 
 ```bash
-python -m src.ingestion.ingest --reset
+uv run --frozen --no-sync python -m src.ingestion.ingest --reset
 ```
 
 Run the API and the UI in two terminals:
 
 ```bash
-uvicorn api.main:app --reload --port 8000
+uv run --frozen --no-sync uvicorn api.main:app --reload --port 8000
 ```
 
 ```bash
-streamlit run frontend/app.py
+uv run --frozen --no-sync streamlit run frontend/app.py
 ```
 
 ### Native Windows with managed pgvector (no Docker)
@@ -136,6 +132,11 @@ provider supports the `vector` extension. Create that database in the provider's
 enable `vector`, and put its **direct PostgreSQL connection URL** in `.env` as `DATABASE_URL`.
 Do not use a transaction-pooler URL: RAGuard keeps a small connection pool and needs normal
 session semantics for pgvector.
+
+Schema bootstrap creates the `vector` extension through an unconfigured direct connection
+before the application opens its vector-aware pool. If runtime and administrative connections
+need to differ, set the optional `DATABASE_ADMIN_URL` to a direct connection; otherwise leave it
+empty and the bootstrap reuses `DATABASE_URL`.
 
 Managed-database outages are bounded by `DB_POOL_TIMEOUT_S` (10 seconds by
 default), while background connection creation is bounded separately by
@@ -149,6 +150,11 @@ required extension; the check command does not change the database:
 powershell -ExecutionPolicy Bypass -File .\scripts\run-native.ps1 -Task setup-db
 powershell -ExecutionPolicy Bypass -File .\scripts\run-native.ps1 -Task check-db
 ```
+
+If the read-only check says outbound TCP 5432 is blocked, the database URL and
+TLS settings have not been reached yet. Allow PostgreSQL egress in the current
+network or run the command from Codespaces; do not weaken `sslmode=require` to
+work around that policy.
 
 Then use three PowerShell terminals. These commands never invoke Docker. The launcher places
 Hugging Face and SentenceTransformer downloads under `.cache\raguard-models` in the repository,
@@ -187,7 +193,44 @@ model download. Docker and production omit that override and retain the `full` p
 Codespaces keeps the workspace, Docker images, model cache, database, and
 build cache on GitHub's remote infrastructure rather than on the developer's
 Windows drives. Open the repository in a Codespace, add `GOOGLE_API_KEY` and
-`ADMIN_API_KEY` as Codespaces secrets, then use the remote terminal:
+`ADMIN_API_KEY` as Codespaces secrets.
+
+#### Native Codespaces + Neon (recommended)
+
+This is the lowest-storage operational mode: it starts **no Docker images,
+containers, Redis, or local PostgreSQL database**. Add `DATABASE_URL` as a
+Codespaces secret too, using Neon's direct PostgreSQL URL with
+`sslmode=require`. Run the following in the Codespaces terminal:
+
+```bash
+# Read-only validation; it never prints the connection URL or password.
+bash scripts/run-codespaces.sh check-db
+
+# Idempotently enable pgvector. Ingestion creates RAGuard's schema if absent.
+bash scripts/run-codespaces.sh setup-db
+
+# Use --no-reset for a non-destructive upsert. Omit it only for a deliberate
+# source rebuild, because ingestion otherwise clears and reloads each source.
+bash scripts/run-codespaces.sh ingest --no-reset
+
+# Terminal 1: FastAPI. First start downloads models only to .codespaces/models.
+bash scripts/run-codespaces.sh api
+
+# Terminal 2, optional: Streamlit UI.
+bash scripts/run-codespaces.sh frontend
+```
+
+The launcher uses `local_compact` by default: BGE-M3 plus the approximately
+90 MB compact reranker, around **2.29 GB** of model files stored remotely.
+For the full-quality 4.4 GB pair, start the API with
+`RAGUARD_RUNTIME_PROFILE=full bash scripts/run-codespaces.sh api`. The Neon data
+remains in Neon; only cached model weights and the Codespaces Python environment
+occupy the remote workspace.
+
+#### Docker Compose in Codespaces (optional)
+
+Use this only when you specifically want the Docker topology (PostgreSQL,
+Redis, API, and frontend) inside Codespaces:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.codespaces.yml \
@@ -204,8 +247,8 @@ models remotely; it does not consume local C: or D: storage.
 
 Production uses two independently scalable images: the FastAPI service from
 `Dockerfile` and the lightweight Streamlit service from `Dockerfile.frontend`.
-The API image installs CPU-only PyTorch explicitly, excludes test/evaluation/UI
-dependencies through `requirements-api.txt`, runs as a non-root user, and uses
+The API image installs the frozen runtime group with CPU-only PyTorch, excludes
+test/evaluation/UI dependency groups, runs as a non-root user, and uses
 one worker per container so model memory is not duplicated accidentally.
 
 Copy the non-secret contract in `deploy/environment.example` into the cloud
@@ -512,7 +555,7 @@ Everything is environment-driven; see [.env.example](.env.example). Selected def
 | Setting | Default | Note |
 | --- | --- | --- |
 | `GEMINI_MODEL` | `gemini-3.1-flash-lite` | Pinned, not a `-latest` alias, so evaluation runs stay comparable |
-| `GEMINI_JUDGE_MODEL` | `gemini-flash-lite-latest` | Deliberately different from the generator |
+| `GEMINI_JUDGE_MODEL` | `gemini-3.5-flash-lite` | Deliberately different from the generator |
 | `EMBEDDING_MODEL` | `BAAI/bge-m3` | 1024-dimensional dense vectors |
 | `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | ~568 M parameters; falls back to a 22 M model if it cannot load |
 | `RERANKER_DEVICE` | inherits `MODEL_DEVICE` | Separate device for the cross-encoder; use `cuda` only after benchmarking |
@@ -522,12 +565,23 @@ Everything is environment-driven; see [.env.example](.env.example). Selected def
 | `EVIDENCE_CONFIDENCE_THRESHOLD` | `0.70` | |
 | `GRAPH_MAX_RETRIES` | `2` | Query rewrites after weak evidence |
 | `GRAPH_MAX_REGENERATIONS` | `1` | Regenerations after failed verification |
+| `GRAPH_REQUEST_TIMEOUT_S` | `150` | One monotonic deadline across the complete graph; must be below the admission lease |
+| `GRAPH_LLM_CALL_LIMIT` | `8` | Shared by graders, rewrites, generation, regeneration, and each entailment claim |
 | `VERIFIER_BACKEND` | `entailment` | `deterministic` restores the offline lexical verifier |
 | `CORS_ALLOW_ORIGINS` | local Streamlit only | Not `*`; widen deliberately |
 
 The judge is a different model from the generator on purpose. A judge sharing the generator's
 weights tends to share its blind spots, and independent verification is the point of the citation
 layer.
+
+Budgeted graph calls disable provider-internal retries so hidden SDK attempts cannot bypass call
+accounting. Each admitted provider call receives the lesser of `LLM_REQUEST_TIMEOUT_S` and the
+time remaining on the graph deadline. The default 150-second graph deadline finishes before the
+180-second Streamlit timeout and the 300-second admission lease. Budget exhaustion is a controlled
+abstention and is exposed through bounded response and Prometheus fields without query content.
+The deadline is cooperative at graph boundaries; provider network calls receive a real client
+timeout, while an already-running local CPU operation completes before the next boundary can stop
+the workflow.
 
 Chunking: 800 characters with 120 of overlap, headings preserved so a chunk carries its section
 context. Retrieval: 20 dense and 20 sparse candidates, RRF with k=60, top 5 after reranking.
@@ -575,12 +629,11 @@ outperforms the full stack here, and the reranker improved one case while regres
 remains in the pipeline behind `RERANKER_ENABLED` and is re-measured by the heavy benchmark rather
 than assumed to help.
 
-**RAGAS is installed but cannot import.** `ragas 0.4.3` requires
-`langchain_community.chat_models.vertexai`, which no longer exists in the installed
-`langchain-community`. The layer reports `RAGAS_NOT_AVAILABLE` with that exact reason, and the
-dataset adapter still runs so the cases that *would* be evaluated remain visible. No score is
-invented. Resolving it means changing versions in a stack that generation and verification depend
-on, which has not been attempted.
+**RAGAS has an explicit compatibility pair.** RAGAS 0.4.3 imports
+`langchain_community.chat_models.vertexai`, which was removed in `langchain-community` 0.4.2. The
+evaluation group therefore pins `langchain-community` 0.4.1; that pair is import-tested with the
+current LangChain Core 1.x runtime. Minimal runtime/UI installs still report
+`RAGAS_NOT_AVAILABLE` honestly; they never invent a substitute score.
 
 **`rank_bm25` holds the index in memory** and rebuilds it from PostgreSQL at start-up. Correct at
 this corpus size; replace with PostgreSQL full-text search (`tsvector` + GIN) beyond roughly

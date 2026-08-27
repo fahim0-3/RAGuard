@@ -26,6 +26,12 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from src.config import get_settings
+from src.self_healing.execution_budget import (
+    ExecutionBudgetExceeded,
+    reserve_llm_call,
+)
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -88,7 +94,9 @@ class EntailmentVerdict(BaseModel):
         return " ".join(str(value or "").split())[:240]
 
 
-def build_entailment_chain() -> Any:
+def build_entailment_chain(
+    *, timeout_s: float | None = None, max_retries: int | None = None
+) -> Any:
     from langchain_core.output_parsers import JsonOutputParser
     from langchain_core.prompts import ChatPromptTemplate
 
@@ -97,7 +105,11 @@ def build_entailment_chain() -> Any:
     prompt = ChatPromptTemplate.from_messages(
         [("system", ENTAILMENT_SYSTEM_PROMPT), ("human", ENTAILMENT_HUMAN_PROMPT)]
     ).partial(output_schema=ENTAILMENT_OUTPUT_SCHEMA)
-    return prompt | get_chat_model("judge") | JsonOutputParser()
+    return (
+        prompt
+        | get_chat_model("judge", timeout_s=timeout_s, max_retries=max_retries)
+        | JsonOutputParser()
+    )
 
 
 #: Passage text handed to the judge per claim. Long enough for a full policy
@@ -106,16 +118,43 @@ MAX_PASSAGE_CHARS = 3000
 
 
 def judge_claim(
-    claim_text: str, passage: str, chain: Any | None = None
+    claim_text: str,
+    passage: str,
+    chain: Any | None = None,
+    llm_timeout_s: float | None = None,
+    llm_max_retries: int | None = None,
 ) -> EntailmentVerdict | None:
     """Ask the model about one claim. Returns None when no verdict was obtained.
 
     None is distinct from "not supported": an unreachable judge must not be
     recorded as a model deciding against the claim.
     """
+    settings = get_settings()
+    permit = reserve_llm_call(
+        "verify_citations",
+        default_timeout_s=(
+            llm_timeout_s
+            if llm_timeout_s is not None
+            else settings.llm_request_timeout_s
+        ),
+        default_max_retries=(
+            llm_max_retries
+            if llm_max_retries is not None
+            else settings.llm_max_retries
+        ),
+    )
     try:
-        chain = chain if chain is not None else build_entailment_chain()
+        chain = (
+            chain
+            if chain is not None
+            else build_entailment_chain(
+                timeout_s=permit.timeout_s,
+                max_retries=permit.max_retries,
+            )
+        )
         raw = chain.invoke({"claim": claim_text, "passage": passage[:MAX_PASSAGE_CHARS]})
+    except ExecutionBudgetExceeded:
+        raise
     except Exception as exc:  # noqa: BLE001 - a judge outage degrades, never crashes
         logger.warning("Entailment judge unavailable: %s", exc)
         return None

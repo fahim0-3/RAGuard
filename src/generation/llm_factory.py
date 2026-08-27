@@ -68,7 +68,12 @@ def model_name_for(role: Role) -> str:
     return settings.llm_model or settings.gemini_model
 
 
-def _build_gemini(role: Role) -> Any:
+def _build_gemini(
+    role: Role,
+    *,
+    timeout_s: float | None = None,
+    max_retries: int | None = None,
+) -> Any:
     try:
         from langchain_google_genai import ChatGoogleGenerativeAI
     except ImportError as exc:  # pragma: no cover - depends on the environment
@@ -89,12 +94,17 @@ def _build_gemini(role: Role) -> Any:
         google_api_key=settings.google_api_key,
         temperature=_temperature_for(role),
         max_output_tokens=settings.llm_max_output_tokens,
-        timeout=settings.llm_request_timeout_s,
-        max_retries=settings.llm_max_retries,
+        timeout=timeout_s if timeout_s is not None else settings.llm_request_timeout_s,
+        max_retries=max_retries if max_retries is not None else settings.llm_max_retries,
     )
 
 
-def _build_ollama(role: Role) -> Any:
+def _build_ollama(
+    role: Role,
+    *,
+    timeout_s: float | None = None,
+    max_retries: int | None = None,
+) -> Any:
     try:
         from langchain_ollama import ChatOllama
     except ImportError as exc:  # pragma: no cover - optional dependency
@@ -103,20 +113,30 @@ def _build_ollama(role: Role) -> Any:
         ) from exc
 
     settings = get_settings()
+    effective_timeout = (
+        timeout_s if timeout_s is not None else settings.llm_request_timeout_s
+    )
     return ChatOllama(
         model=model_name_for(role),
         base_url=settings.ollama_base_url,
         temperature=_temperature_for(role),
         num_predict=settings.llm_max_output_tokens,
+        # ChatOllama forwards these values to its sync and async httpx clients.
+        client_kwargs={"timeout": effective_timeout},
     )
 
 
 _BUILDERS = {"gemini": _build_gemini, "ollama": _build_ollama}
 
 
-@lru_cache(maxsize=8)
-def get_chat_model(role: Role = "generator") -> Any:
-    """Return the chat model for a role. Cached per (provider, role)."""
+@lru_cache(maxsize=32)
+def get_chat_model(
+    role: Role = "generator",
+    *,
+    timeout_s: float | None = None,
+    max_retries: int | None = None,
+) -> Any:
+    """Return a role model, optionally bounded by a request-level permit."""
     settings = get_settings()
     builder = _BUILDERS.get(settings.llm_provider)
     if builder is None:
@@ -125,7 +145,7 @@ def get_chat_model(role: Role = "generator") -> Any:
             f"expected one of {sorted(_BUILDERS)}"
         )
     logger.info("Building %s model for role=%s", settings.llm_provider, role)
-    return builder(role)
+    return builder(role, timeout_s=timeout_s, max_retries=max_retries)
 
 
 def provider_config(role: Role = "generator") -> dict[str, Any]:

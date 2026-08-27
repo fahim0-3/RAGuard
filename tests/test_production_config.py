@@ -43,6 +43,14 @@ def test_valid_production_configuration_passes():
     [
         ({"database_url": "postgresql://u:p@localhost/db?sslmode=require"}, "database_url_local"),
         ({"database_url": "postgresql://u:p@db.example.net/db"}, "database_tls_required"),
+        (
+            {"database_admin_url": "postgresql://u:p@admin.example.net/db"},
+            "database_admin_tls_required",
+        ),
+        (
+            {"database_admin_url": "postgresql://u:p@localhost/db?sslmode=require"},
+            "database_admin_url_local",
+        ),
         ({"google_api_key": "your-key"}, "google_api_key_missing"),
         (
             {"llm_provider": "ollama", "ollama_base_url": "http://localhost:11434"},

@@ -26,6 +26,7 @@ AbstainReason = Literal[
     "generation_failed",
     "unverified_citations",
     "provider_error",
+    "request_budget_exhausted",
 ]
 
 ABSTENTION_BASE = (
@@ -58,6 +59,10 @@ _REASON_SUFFIX: dict[str, str] = {
     "provider_error": (
         f"{_CONTACT}. The answering service is temporarily unavailable, so I cannot "
         "answer right now."
+    ),
+    "request_budget_exhausted": (
+        f"{_CONTACT}. The request reached its safe processing limit before the answer "
+        "could be fully verified."
     ),
 }
 

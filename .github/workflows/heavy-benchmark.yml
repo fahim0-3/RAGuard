@@ -60,7 +60,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
 
       - name: Cache Hugging Face weights
         uses: actions/cache@v4
@@ -70,10 +72,7 @@ jobs:
           restore-keys: hf-${{ runner.os }}-
 
       - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements.txt
+        run: uv sync --locked --no-default-groups --group dev
 
       - name: Wait for PostgreSQL
         # The service being "started" is not the same as it accepting queries.
@@ -102,7 +101,7 @@ jobs:
         run: psql -h localhost -p 5432 -U raguard -d raguard -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
       - name: Ingest corpus
-        run: python -m src.ingestion.ingest --reset
+        run: uv run --frozen --no-sync python -m src.ingestion.ingest --reset
 
       - name: Reranking comparison (BM25 / vector / RRF / RRF+reranker)
         if: inputs.mode != 'slow-tests'
@@ -116,14 +115,14 @@ jobs:
         #
         # No provider key: this layer is retrieval and reranking only.
         run: |
-          python -m src.evaluation.reranking_eval \
+          uv run --frozen --no-sync python -m src.evaluation.reranking_eval \
             --output reports/heavy_reranking.json
 
       - name: Confirm the benchmark actually measured something
         if: inputs.mode != 'slow-tests'
         # A benchmark reporting NOT_MEASURED must not read as a green run.
         run: |
-          python -c "
+          uv run --frozen --no-sync python -c "
           import json, pathlib, sys
           path = pathlib.Path('reports/heavy_reranking.json')
           if not path.exists():
@@ -140,7 +139,7 @@ jobs:
         if: inputs.mode != 'comparison'
         # The per-case gate on the reranked top 5, held out of the default
         # integration tier by the `slow` marker.
-        run: pytest -m slow -v
+        run: uv run --frozen --no-sync pytest -m slow -v
 
       - name: Upload benchmark artifacts
         if: always()

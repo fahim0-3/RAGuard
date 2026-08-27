@@ -12,6 +12,7 @@ Everything here runs without PostgreSQL, without Gemini, and without RAGAS.
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -541,11 +542,14 @@ def test_pr_ci_does_not_run_the_heavy_reranker_benchmark():
 
 
 def test_pr_ci_installs_what_the_fast_tier_actually_imports():
-    """The fast tier grew through Phases E-H; the install list must keep up."""
-    text = (WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
+    """The fast tier's locked dependency group must cover its import surface."""
+    workflow = (WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
+    project = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dependencies = "\n".join(project["dependency-groups"]["dev"])
 
+    assert "--only-group dev" in workflow
     for package in ("fastapi", "langgraph", "jsonschema", "httpx"):
-        assert package in text, f"fast tier imports {package} but CI does not install it"
+        assert package in dependencies, f"fast tier imports {package} but dev does not install it"
 
 
 def test_integration_ci_provisions_postgres_with_pgvector():

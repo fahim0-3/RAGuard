@@ -36,18 +36,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
       - name: Install contract-test dependencies
-        run: |
-          pip install pytest ruff pyyaml pydantic pydantic-settings python-dotenv \
-                      fastapi httpx "psycopg[binary]" psycopg-pool pgvector redis \
-                      langchain-core langchain-text-splitters langgraph rank-bm25 \
-                      opentelemetry-api opentelemetry-sdk \
-                      opentelemetry-exporter-otlp-proto-http
-      - run: ruff check api src scripts tests
+        run: uv sync --locked --no-default-groups --only-group dev --no-install-project
+      - run: uv run --frozen --no-sync ruff check api src scripts tests
       - name: Run production contract tests
         run: |
-          pytest tests/test_production_config.py \
+          uv run --frozen --no-sync pytest tests/test_production_config.py \
                  tests/test_production_preflight.py \
                  tests/test_smoke_service.py \
                  tests/test_deployment_contract.py \
@@ -67,7 +64,7 @@ jobs:
           ADMISSION_REDIS_URL: rediss://redis.example.net:6379/0
           OTEL_EXPORTER_OTLP_ENDPOINT: https://otel.example.net/v1/traces
           HF_HOME: /models
-        run: python -m scripts.production_preflight
+        run: uv run --frozen --no-sync python -m scripts.production_preflight
 
   images:
     name: Build production images remotely
@@ -119,13 +116,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install httpx
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked --no-default-groups --only-group smoke --no-install-project
       - name: Wait for the deployed API
         env:
           DEPLOYED_API_URL: ${{ inputs.api_url }}
           EXPECTED_RUNTIME_PROFILE: ${{ inputs.expected_profile }}
         run: |
-          python -m scripts.smoke_service \
+          uv run --frozen --no-sync python -m scripts.smoke_service \
             --base-url "$DEPLOYED_API_URL" \
             --expected-profile "$EXPECTED_RUNTIME_PROFILE" \
             --deadline-s 600

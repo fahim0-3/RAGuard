@@ -27,7 +27,7 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $python = Join-Path $projectRoot ".venv\Scripts\python.exe"
 
 if (-not (Test-Path -LiteralPath $python)) {
-    throw "Python environment not found. Run: py -3.12 -m venv .venv; .venv\\Scripts\\python.exe -m pip install -r requirements.txt"
+    throw "Python environment not found. Run: uv sync --locked --all-groups"
 }
 
 # These process-level variables take precedence over .env and ensure all Hugging

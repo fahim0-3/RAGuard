@@ -71,12 +71,29 @@ def close_pool() -> None:
         _pool = None
 
 
+def enable_vector_extension() -> None:
+    """Create pgvector before opening connections that register its types.
+
+    ``ConnectionPool.configure`` calls :func:`register_vector`, which queries
+    PostgreSQL's type catalog. On a fresh database that callback cannot succeed
+    until the extension exists, so bootstrap must use an unconfigured direct
+    connection. ``DATABASE_ADMIN_URL`` can provide that connection separately
+    from the runtime pool; the normal direct ``DATABASE_URL`` is the fallback.
+    """
+    settings = get_settings()
+    with psycopg.connect(
+        settings.schema_database_url,
+        connect_timeout=settings.db_connect_timeout_s,
+    ) as conn:
+        conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        conn.commit()
+
+
 def init_schema() -> None:
     """Create the extension, table, and indexes. Safe to run repeatedly."""
     settings = get_settings()
+    enable_vector_extension()
     ddl = f"""
-    CREATE EXTENSION IF NOT EXISTS vector;
-
     CREATE TABLE IF NOT EXISTS {CHUNKS_TABLE} (
         id           BIGSERIAL PRIMARY KEY,
         source       TEXT        NOT NULL,
@@ -108,12 +125,8 @@ def clear_source(source: str) -> int:
         return cur.rowcount
 
 
-def insert_chunks(records: Sequence[dict[str, Any]]) -> int:
-    """Insert chunk records. Each record needs source, doc_id, chunk_index,
-    content, metadata, embedding."""
-    if not records:
-        return 0
-    rows = [
+def _chunk_rows(records: Sequence[dict[str, Any]]) -> list[tuple[Any, ...]]:
+    return [
         (
             r["source"],
             r["doc_id"],
@@ -124,6 +137,10 @@ def insert_chunks(records: Sequence[dict[str, Any]]) -> int:
         )
         for r in records
     ]
+
+
+def _upsert_chunks(cur: psycopg.Cursor, records: Sequence[dict[str, Any]]) -> int:
+    rows = _chunk_rows(records)
     sql = f"""
         INSERT INTO {CHUNKS_TABLE} (source, doc_id, chunk_index, content, metadata, embedding)
         VALUES (%s, %s, %s, %s, %s::jsonb, %s)
@@ -132,10 +149,40 @@ def insert_chunks(records: Sequence[dict[str, Any]]) -> int:
             metadata = EXCLUDED.metadata,
             embedding = EXCLUDED.embedding
     """
-    with get_connection() as conn, conn.cursor() as cur:
-        cur.executemany(sql, rows)
-        conn.commit()
+    cur.executemany(sql, rows)
     return len(rows)
+
+
+def insert_chunks(records: Sequence[dict[str, Any]]) -> int:
+    """Insert chunk records in one transaction."""
+    if not records:
+        return 0
+    with get_connection() as conn, conn.cursor() as cur:
+        written = _upsert_chunks(cur, records)
+        conn.commit()
+    return written
+
+
+def replace_source_chunks(
+    source: str, records: Sequence[dict[str, Any]]
+) -> tuple[int, int]:
+    """Atomically replace every stored chunk for one source.
+
+    The delete and upsert share a transaction. If serialization, constraint,
+    or database execution fails, the pooled connection context rolls back and
+    preserves the previously valid source instead of leaving it empty.
+    """
+    if not records:
+        raise ValueError("Source replacement requires at least one chunk")
+    if any(record.get("source") != source for record in records):
+        raise ValueError("Every replacement chunk must match the source")
+
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute(f"DELETE FROM {CHUNKS_TABLE} WHERE source = %s", (source,))
+        removed = cur.rowcount
+        written = _upsert_chunks(cur, records)
+        conn.commit()
+    return removed, written
 
 
 def count_chunks() -> int:

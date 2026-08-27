@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import yaml
@@ -48,16 +49,18 @@ def test_deployment_yaml_contains_no_duplicate_keys():
 
 def test_api_image_forces_cpu_torch_and_one_worker():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-    assert "download.pytorch.org/whl/cpu" in dockerfile
-    assert "requirements-api.txt" in dockerfile
+    assert project["tool"]["uv"]["sources"]["torch"] == {"index": "pytorch-cpu"}
+    assert "uv sync --locked --no-default-groups" in dockerfile
     assert "--workers 1" in dockerfile
     assert "USER 10001:10001" in dockerfile
-    assert "requirements.txt" not in dockerfile
+    assert "requirements" not in dockerfile
 
 
 def test_api_runtime_requirements_exclude_non_runtime_tooling():
-    requirements = (ROOT / "requirements-api.txt").read_text(encoding="utf-8").lower()
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    requirements = "\n".join(project["project"]["dependencies"]).lower()
 
     for excluded in ("pytest", "ruff", "ragas", "datasets", "streamlit"):
         assert excluded not in requirements
@@ -109,6 +112,7 @@ def test_render_blueprint_has_the_required_remote_resources():
         "mountPath": "/models",
         "sizeGB": 5,
     }
+    assert "maxShutdownDelaySeconds" not in api
     assert api["healthCheckPath"] == "/health"
     assert frontend["dockerfilePath"] == "./Dockerfile.frontend"
     assert admission["type"] == "keyvalue"

@@ -540,6 +540,35 @@ def test_graph_failure_reason_is_allow_listed(client):
     assert "secret" not in str(body).lower()
 
 
+def test_request_budget_exhaustion_is_exposed_as_a_bounded_abstention(client):
+    use_settings(admin_api_key="metrics-key")
+    use_graph(
+        StubGraph(
+            graph_state(
+                final_outcome="abstain",
+                final_answer="The request reached its safe processing limit.",
+                failure_reason="request_budget_exhausted",
+                llm_calls_used=2,
+                llm_call_limit=2,
+                budget_exhausted=True,
+            )
+        )
+    )
+
+    body = client.post("/query", json={"query": "a question here"}).json()
+
+    assert body["outcome"] == "abstain"
+    assert body["failure_reason"] == "request_budget_exhausted"
+    assert body["llm_calls_used"] == body["llm_call_limit"] == 2
+    assert body["budget_exhausted"] is True
+
+    metrics = client.get(
+        "/admin/metrics", headers={"X-Admin-Key": "metrics-key"}
+    ).json()
+    assert metrics["budget"]["llm_calls_total"] == 2
+    assert metrics["budget"]["exhausted_total"] == 1
+
+
 # --------------------------------------------------------------------------
 # Operational endpoint protection
 # --------------------------------------------------------------------------

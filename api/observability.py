@@ -62,12 +62,24 @@ class RuntimeMetrics:
         evidence_sufficient: bool | None = None,
         verification_status: str = "not_checked",
         reranker_used: bool | None = None,
+        llm_calls_used: int = 0,
+        budget_exhausted: bool = False,
+        budget_exhaustion_reason: str = "",
     ) -> None:
         """Record a completed admitted query using allow-listed categorical fields."""
         with self._lock:
             self._counters["query_completed_total"] += 1
             self._counters[f"query_outcome_{outcome}_total"] += 1
             self._counters["retrieved_chunks_total"] += max(0, retrieved_chunk_count)
+            self._counters["llm_calls_total"] += max(0, llm_calls_used)
+            if budget_exhausted:
+                self._counters["request_budget_exhausted_total"] += 1
+                safe_reason = (
+                    budget_exhaustion_reason
+                    if budget_exhaustion_reason in {"deadline", "llm_call_limit"}
+                    else "unknown"
+                )
+                self._counters[f"request_budget_reason_{safe_reason}_total"] += 1
             self._counters[f"verification_{verification_status}_total"] += 1
             if evidence_sufficient is not None:
                 self._counters[
@@ -110,6 +122,13 @@ class RuntimeMetrics:
                     "verification": _group(counters, "verification_", "_total"),
                     "reranker_used": _group(counters, "reranker_used_", "_total"),
                 },
+                "budget": {
+                    "llm_calls_total": counters.get("llm_calls_total", 0),
+                    "exhausted_total": counters.get("request_budget_exhausted_total", 0),
+                    "exhaustion_reasons": _group(
+                        counters, "request_budget_reason_", "_total"
+                    ),
+                },
                 "latency_ms": {
                     "count": self._latency_count,
                     "average": round(average, 2),
@@ -137,6 +156,8 @@ class RuntimeMetrics:
         _emit_counter(lines, "raguard_queries_failed", "Queries that failed after admission.", counters.get("query_failed_total", 0))
         _emit_counter(lines, "raguard_query_admission_rejections", "Queries rejected before workflow execution.", counters.get("query_admission_rejections_total", 0))
         _emit_counter(lines, "raguard_retrieved_chunks", "Retrieved chunks considered by completed queries.", counters.get("retrieved_chunks_total", 0))
+        _emit_counter(lines, "raguard_llm_calls", "Budgeted model invocations used by completed queries.", counters.get("llm_calls_total", 0))
+        _emit_counter(lines, "raguard_request_budget_exhausted", "Completed queries that exhausted a request budget.", counters.get("request_budget_exhausted_total", 0))
 
         _emit_labelled_counter(lines, "raguard_query_outcomes", "Completed queries by public outcome.", _group(counters, "query_outcome_", "_total"), "outcome")
         _emit_labelled_counter(lines, "raguard_query_failures", "Failed queries by safe failure category.", _group(counters, "query_failure_", "_total"), "reason")
@@ -144,6 +165,7 @@ class RuntimeMetrics:
         _emit_labelled_counter(lines, "raguard_evidence_decisions", "Evidence sufficiency decisions.", _group(counters, "evidence_sufficient_", "_total"), "sufficient")
         _emit_labelled_counter(lines, "raguard_verification_results", "Citation verification results.", _group(counters, "verification_", "_total"), "status")
         _emit_labelled_counter(lines, "raguard_reranker_usage", "Completed queries by reranker usage.", _group(counters, "reranker_used_", "_total"), "used")
+        _emit_labelled_counter(lines, "raguard_request_budget_exhaustions", "Request budget exhaustion by bounded reason.", _group(counters, "request_budget_reason_", "_total"), "reason")
 
         lines.extend((
             "# HELP raguard_query_latency_seconds Workflow latency for completed queries.",

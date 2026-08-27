@@ -20,7 +20,6 @@ services:
     dockerContext: .
     autoDeployTrigger: checksPass
     healthCheckPath: /health
-    maxShutdownDelaySeconds: 300
     numInstances: 1
     disk:
       name: raguard-model-cache

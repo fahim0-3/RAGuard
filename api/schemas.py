@@ -142,6 +142,9 @@ class QueryResponse(BaseModel):
     trace: list[TraceStep] = Field(default_factory=list)
     latency_ms: float = 0.0
     prompt_version: str = ""
+    llm_calls_used: int = 0
+    llm_call_limit: int = 0
+    budget_exhausted: bool = False
 
 
 class HealthResponse(BaseModel):

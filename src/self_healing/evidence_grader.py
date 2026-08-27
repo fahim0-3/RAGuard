@@ -247,7 +247,9 @@ def _deterministic_verdict(signals: dict[str, Any]) -> tuple[bool, str]:
     return True, f"top score {signals['top_score']:.2f} over threshold"
 
 
-def _build_grader_chain() -> Any:
+def _build_grader_chain(
+    *, timeout_s: float | None = None, max_retries: int | None = None
+) -> Any:
     from langchain_core.output_parsers import JsonOutputParser
     from langchain_core.prompts import ChatPromptTemplate
 
@@ -259,7 +261,11 @@ def _build_grader_chain() -> Any:
             ("human", EVIDENCE_GRADER_HUMAN_PROMPT),
         ]
     ).partial(output_schema=EVIDENCE_GRADER_OUTPUT_SCHEMA)
-    return prompt | get_chat_model("judge") | JsonOutputParser()
+    return (
+        prompt
+        | get_chat_model("judge", timeout_s=timeout_s, max_retries=max_retries)
+        | JsonOutputParser()
+    )
 
 
 def _format_passages(chunks: list[RetrievedChunk]) -> str:
@@ -276,6 +282,8 @@ def grade_evidence(
     chunks: list[RetrievedChunk],
     use_llm: bool | None = None,
     chain: Any | None = None,
+    llm_timeout_s: float | None = None,
+    llm_max_retries: int | None = None,
 ) -> EvidenceGrade:
     """Grade the evidence for `query`.
 
@@ -311,7 +319,14 @@ def grade_evidence(
         )
 
     try:
-        chain = chain if chain is not None else _build_grader_chain()
+        if chain is None:
+            chain = (
+                _build_grader_chain()
+                if llm_timeout_s is None and llm_max_retries is None
+                else _build_grader_chain(
+                    timeout_s=llm_timeout_s, max_retries=llm_max_retries
+                )
+            )
         raw = chain.invoke({"question": query, "context": _format_passages(chunks)})
     except Exception as exc:  # noqa: BLE001 - grading must never break the graph
         logger.warning("Evidence grader unavailable; refusing to answer (%s)", exc)

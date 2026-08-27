@@ -102,28 +102,37 @@ async def lifespan(app: FastAPI):
         for warning in preflight.warnings:
             logger.warning("Production preflight recommendation: %s", warning.code)
     configure_tracing(settings)
+    indexed_chunks = 0
+    database_ready = False
     try:
         init_schema()
-        logger.info("Connected to pgvector, %d chunks indexed", count_chunks())
+        indexed_chunks = count_chunks()
+        database_ready = True
+        logger.info("Connected to pgvector, %d chunks indexed", indexed_chunks)
     except Exception:
         # Never crash on a dependency failure at start-up: /health must stay
         # reachable so the cause is diagnosable rather than a restart loop.
         logger.exception("Database initialisation failed at start-up")
 
-    # Load the embedding model off the request path. On a cold cache this
-    # downloads ~2.2 GB, which is far too long to sit inside the first user
-    # query — that is what made the UI look hung.
+    # Load models off the request path only after the database and corpus are
+    # usable. A cold embedding cache downloads ~2.2 GB, so starting warmup
+    # during a database outage would waste disk and bandwidth.
     #
     # A background thread rather than a blocking await, for two reasons:
     # /health must answer immediately so the container is not killed by its own
     # health check while warming, and `SentenceTransformer(...)` is synchronous
     # so awaiting it would block the event loop entirely. `/ready` is the gate
     # that stays closed until this finishes.
-    for target, name in (
-        (warmup_embedding_model, "embedding-warmup"),
-        (warmup_reranker_model, "reranker-warmup"),
-    ):
-        threading.Thread(target=target, name=name, daemon=True).start()
+    if database_ready and indexed_chunks > 0:
+        for target, name in (
+            (warmup_embedding_model, "embedding-warmup"),
+            (warmup_reranker_model, "reranker-warmup"),
+        ):
+            threading.Thread(target=target, name=name, daemon=True).start()
+    elif database_ready:
+        logger.info("Skipping automatic model warmup until the corpus is ingested")
+    else:
+        logger.info("Skipping automatic model warmup while the database is unavailable")
 
     yield
     close_pool()
@@ -486,6 +495,7 @@ def _public_failure_reason(summary: dict[str, Any]) -> str | None:
         "rejected_invalid_citation",
         "rejected_empty_answer",
         "answer_not_grounded",
+        "request_budget_exhausted",
     }
     return reason if reason in allowed else ("request_not_completed" if reason else None)
 
@@ -521,6 +531,9 @@ def to_response(
         ],
         latency_ms=round(latency_ms, 1),
         prompt_version=str(state.get("prompt_version") or ""),
+        llm_calls_used=int(summary.get("llm_calls_used") or 0),
+        llm_call_limit=int(summary.get("llm_call_limit") or 0),
+        budget_exhausted=bool(summary.get("budget_exhausted")),
     )
 
 
@@ -594,6 +607,9 @@ def query(
         evidence_sufficient=response.evidence_sufficient,
         verification_status=response.verification_status,
         reranker_used=response.reranker_used,
+        llm_calls_used=response.llm_calls_used,
+        budget_exhausted=response.budget_exhausted,
+        budget_exhaustion_reason=str(summary.get("budget_exhaustion_reason") or ""),
     )
     annotate_query_span(request_id=request_id, outcome=response.outcome)
     log_event(
@@ -604,6 +620,8 @@ def query(
         evidence_sufficient=response.evidence_sufficient,
         verification_status=response.verification_status,
         reranker_used=response.reranker_used,
+        llm_calls_used=response.llm_calls_used,
+        budget_exhausted=response.budget_exhausted,
         latency_ms=round(latency_ms, 1),
     )
     return response
@@ -704,5 +722,7 @@ def config(settings: SettingsDep) -> dict[str, Any]:
         "evidence_confidence_threshold": settings.evidence_confidence_threshold,
         "graph_max_retries": settings.graph_max_retries,
         "graph_max_regenerations": settings.graph_max_regenerations,
+        "graph_request_timeout_s": settings.graph_request_timeout_s,
+        "graph_llm_call_limit": settings.graph_llm_call_limit,
         "verifier_backend": settings.verifier_backend,
     }

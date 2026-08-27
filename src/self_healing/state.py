@@ -206,6 +206,15 @@ class GraphState(TypedDict, total=False):
     regeneration_count: int
     max_regenerations: int
 
+    # Request-wide execution budget (safe numeric observability only)
+    request_timeout_s: float
+    llm_call_limit: int
+    llm_calls_used: int
+    budget_exhausted: bool
+    budget_exhaustion_reason: str
+    budget_exhaustion_stage: str
+    budget_elapsed_ms: float
+
     # Generation
     answer_draft: str
     citations: list[str]
@@ -232,6 +241,8 @@ def initial_state(
     *,
     max_retries: int,
     max_regenerations: int,
+    request_timeout_s: float,
+    llm_call_limit: int,
     started_at: str,
 ) -> GraphState:
     """Seed every key so nodes never branch on a missing one."""
@@ -255,6 +266,13 @@ def initial_state(
         max_retries=max_retries,
         regeneration_count=0,
         max_regenerations=max_regenerations,
+        request_timeout_s=request_timeout_s,
+        llm_call_limit=llm_call_limit,
+        llm_calls_used=0,
+        budget_exhausted=False,
+        budget_exhaustion_reason="",
+        budget_exhaustion_stage="",
+        budget_elapsed_ms=0.0,
         answer_draft="",
         citations=[],
         claim_citations=[],

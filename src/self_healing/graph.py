@@ -50,6 +50,14 @@ from src.retrieval.types import RetrievedChunk
 from src.self_healing.abstention import abstention_message
 from src.self_healing.ambiguity_detector import detect_ambiguity
 from src.self_healing.evidence_grader import grade_evidence
+from src.self_healing.execution_budget import (
+    ExecutionBudget,
+    ExecutionBudgetExceeded,
+    LLMCallPermit,
+    ensure_time_remaining,
+    request_budget,
+    reserve_llm_call,
+)
 from src.self_healing.query_rewriter import rewrite_once
 from src.self_healing.retry_policy import (
     may_regenerate,
@@ -130,6 +138,37 @@ def _stamp(state: GraphState, key: str) -> dict[str, str]:
     return stamps
 
 
+def _provider_permit(stage: str) -> LLMCallPermit:
+    settings = get_settings()
+    return reserve_llm_call(
+        stage,
+        default_timeout_s=settings.llm_request_timeout_s,
+        default_max_retries=settings.llm_max_retries,
+    )
+
+
+def _budget_exhausted_update(
+    state: GraphState, stage: str, exc: ExecutionBudgetExceeded
+) -> dict[str, Any]:
+    logger.warning("Request execution budget exhausted at %s (%s)", stage, exc.reason)
+    return {
+        "budget_exhausted": True,
+        "budget_exhaustion_reason": exc.reason,
+        "budget_exhaustion_stage": exc.stage,
+        "failure_reason": "request_budget_exhausted",
+        "timestamps": _stamp(state, "budget_exhausted_at"),
+        "node_sequence": [stage],
+    }
+
+
+def _deadline_guard(state: GraphState, stage: str) -> dict[str, Any] | None:
+    try:
+        ensure_time_remaining(stage)
+    except ExecutionBudgetExceeded as exc:
+        return _budget_exhausted_update(state, stage, exc)
+    return None
+
+
 # --------------------------------------------------------------------------
 # Nodes
 # --------------------------------------------------------------------------
@@ -183,6 +222,8 @@ def ambiguity_detector(state: GraphState) -> dict[str, Any]:
 
 def hybrid_retrieve(state: GraphState) -> dict[str, Any]:
     """BM25 + dense + RRF over the current query, original or rewritten."""
+    if exhausted := _deadline_guard(state, NODE_RETRIEVE):
+        return exhausted
     from src.retrieval.hybrid import get_hybrid_retriever
 
     query = state.get("current_query") or state.get("original_query", "")
@@ -209,6 +250,8 @@ def hybrid_retrieve(state: GraphState) -> dict[str, Any]:
 
 def rerank(state: GraphState) -> dict[str, Any]:
     """Cross-encoder reranking. Degrades to RRF order rather than failing."""
+    if exhausted := _deadline_guard(state, NODE_RERANK):
+        return exhausted
     from src.reranking import get_reranker
 
     chunks: list[RetrievedChunk] = list(state.get("retrieved_chunks") or [])
@@ -229,8 +272,23 @@ def rerank(state: GraphState) -> dict[str, Any]:
 
 def evidence_grader(state: GraphState) -> dict[str, Any]:
     """Combine deterministic signals with structured grading."""
+    if exhausted := _deadline_guard(state, NODE_GRADER):
+        return exhausted
+    settings = get_settings()
+    chunks = list(state.get("retrieved_chunks") or [])
+    permit: LLMCallPermit | None = None
+    if settings.graph_use_llm and chunks:
+        try:
+            permit = _provider_permit(NODE_GRADER)
+        except ExecutionBudgetExceeded as exc:
+            return _budget_exhausted_update(state, NODE_GRADER, exc)
+
     grade: EvidenceGrade = grade_evidence(
-        state.get("current_query", ""), list(state.get("retrieved_chunks") or [])
+        state.get("current_query", ""),
+        chunks,
+        use_llm=settings.graph_use_llm,
+        llm_timeout_s=permit.timeout_s if permit else None,
+        llm_max_retries=permit.max_retries if permit else None,
     )
     return {
         "evidence_grade": grade.model_dump(),
@@ -241,14 +299,25 @@ def evidence_grader(state: GraphState) -> dict[str, Any]:
 
 def query_rewriter(state: GraphState) -> dict[str, Any]:
     """One rewrite per retry, seeded by what the grader said was missing."""
+    if exhausted := _deadline_guard(state, NODE_REWRITER):
+        return exhausted
     grade = EvidenceGrade.model_validate(state.get("evidence_grade") or {})
     original = state.get("original_query", "")
+    settings = get_settings()
+    permit: LLMCallPermit | None = None
+    if settings.graph_use_llm:
+        try:
+            permit = _provider_permit(NODE_REWRITER)
+        except ExecutionBudgetExceeded as exc:
+            return _budget_exhausted_update(state, NODE_REWRITER, exc)
 
     rewritten = rewrite_once(
         original,
         missing_information=grade.missing_information,
         weak_chunks=list(state.get("retrieved_chunks") or []),
-        use_llm=get_settings().graph_use_llm,
+        use_llm=settings.graph_use_llm,
+        llm_timeout_s=permit.timeout_s if permit else None,
+        llm_max_retries=permit.max_retries if permit else None,
     )
 
     history = list(state.get("rewritten_queries") or [])
@@ -295,15 +364,23 @@ def _revision_feedback(state: GraphState) -> tuple[str, str]:
 
 def generate_answer(state: GraphState) -> dict[str, Any]:
     """Grounded generation over the final chunks. Reuses the Phase E path."""
+    if exhausted := _deadline_guard(state, NODE_GENERATE):
+        return exhausted
     from src.generation.answer_chain import generate_grounded_answer
 
     chunks = list(state.get("retrieved_chunks") or [])
+    try:
+        permit = _provider_permit(NODE_GENERATE)
+    except ExecutionBudgetExceeded as exc:
+        return _budget_exhausted_update(state, NODE_GENERATE, exc)
     previous_answer, verification_feedback = _revision_feedback(state)
     response = generate_grounded_answer(
         state.get("current_query", ""),
         chunks,
         previous_answer=previous_answer,
         verification_feedback=verification_feedback,
+        llm_timeout_s=permit.timeout_s,
+        llm_max_retries=permit.max_retries,
     )
 
     return {
@@ -328,12 +405,17 @@ def make_verify_node(verifier: Verifier):
     """Bind a verifier into the node. Phase G swaps the object, not the graph."""
 
     def verify_citations_node(state: GraphState) -> dict[str, Any]:
-        result: VerificationResult = verifier.verify(
-            state.get("answer_draft", ""),
-            list(state.get("citations") or []),
-            list(state.get("retrieved_chunks") or []),
-            list(state.get("claim_citations") or []),
-        )
+        if exhausted := _deadline_guard(state, NODE_VERIFY):
+            return exhausted
+        try:
+            result: VerificationResult = verifier.verify(
+                state.get("answer_draft", ""),
+                list(state.get("citations") or []),
+                list(state.get("retrieved_chunks") or []),
+                list(state.get("claim_citations") or []),
+            )
+        except ExecutionBudgetExceeded as exc:
+            return _budget_exhausted_update(state, NODE_VERIFY, exc)
         return {
             "verification_result": result.model_dump(),
             "timestamps": _stamp(state, "verified_at"),
@@ -380,7 +462,9 @@ def abstain(state: GraphState) -> dict[str, Any]:
     verification = VerificationResult.model_validate(state.get("verification_result") or {})
     existing = state.get("failure_reason", "") or ""
 
-    if verification.checked and not verification.supported:
+    if state.get("budget_exhausted"):
+        reason = "request_budget_exhausted"
+    elif verification.checked and not verification.supported:
         reason = "unverified_citations"
     elif existing == "retrieval_failed" or state.get("generation_outcome") in {
         "provider_error",
@@ -422,6 +506,8 @@ def route_after_ambiguity(state: GraphState) -> str:
 
 def route_after_grading(state: GraphState) -> str:
     """Sufficient evidence answers; otherwise retry while the budget allows."""
+    if state.get("budget_exhausted"):
+        return "abstain"
     grade = state.get("evidence_grade") or {}
     if grade.get("sufficient"):
         return "generate"
@@ -429,6 +515,8 @@ def route_after_grading(state: GraphState) -> str:
 
 
 def route_after_generation(state: GraphState) -> str:
+    if state.get("budget_exhausted"):
+        return "abstain"
     outcome = state.get("generation_outcome")
     if outcome == "answered" and state.get("answer_draft"):
         return "verify"
@@ -437,6 +525,8 @@ def route_after_generation(state: GraphState) -> str:
 
 def route_after_verification(state: GraphState) -> str:
     """Supported answers finalise; one regeneration is allowed, then abstain."""
+    if state.get("budget_exhausted"):
+        return "abstain"
     verification = state.get("verification_result") or {}
     if verification.get("supported"):
         return "finalize"
@@ -446,6 +536,10 @@ def route_after_verification(state: GraphState) -> str:
 def _count_regeneration(state: GraphState) -> dict[str, Any]:
     """Consume a regeneration attempt before re-entering generation."""
     return {"regeneration_count": record_regeneration(state)}
+
+
+def route_after_rewrite(state: GraphState) -> str:
+    return "abstain" if state.get("budget_exhausted") else "retrieve"
 
 
 # --------------------------------------------------------------------------
@@ -504,7 +598,11 @@ def build_graph(verifier: Verifier | None = None) -> Any:
         },
     )
     # The retry cycle, declared as an edge rather than hidden in a loop body.
-    builder.add_edge(NODE_REWRITER, NODE_RETRIEVE)
+    builder.add_conditional_edges(
+        NODE_REWRITER,
+        route_after_rewrite,
+        {"retrieve": NODE_RETRIEVE, "abstain": NODE_ABSTAIN},
+    )
 
     builder.add_conditional_edges(
         NODE_GENERATE,
@@ -557,10 +655,28 @@ class SelfHealingGraph:
             request_id or str(uuid.uuid4()),
             max_retries=settings.graph_max_retries,
             max_regenerations=settings.graph_max_regenerations,
+            request_timeout_s=settings.graph_request_timeout_s,
+            llm_call_limit=settings.graph_llm_call_limit,
             started_at=_now(),
         )
-        final = self.graph.invoke(state)
-        return dict(final)
+        budget = ExecutionBudget(
+            timeout_s=settings.graph_request_timeout_s,
+            max_llm_calls=settings.graph_llm_call_limit,
+        )
+        with request_budget(budget):
+            try:
+                final = dict(self.graph.invoke(state))
+            except ExecutionBudgetExceeded as exc:
+                # Defensive boundary for a future provider call added without a
+                # node-level handler. It still fails closed and returns no draft.
+                failed = {**state, **_budget_exhausted_update(state, exc.stage, exc)}
+                terminal = abstain(failed)
+                failed["node_sequence"] = list(failed.get("node_sequence") or []) + list(
+                    terminal.pop("node_sequence", [])
+                )
+                final = {**failed, **terminal}
+        final.update(budget.snapshot())
+        return final
 
     def run(self, question: str, request_id: str | None = None) -> dict[str, Any]:
         """Invoke and return an observability-shaped summary."""
@@ -588,6 +704,13 @@ def summarise(state: dict[str, Any]) -> dict[str, Any]:
         "reranker_used": state.get("reranker_used"),
         "node_sequence": list(state.get("node_sequence") or []),
         "timestamps": state.get("timestamps") or {},
+        "request_timeout_s": state.get("request_timeout_s"),
+        "llm_call_limit": state.get("llm_call_limit"),
+        "llm_calls_used": state.get("llm_calls_used", 0),
+        "budget_exhausted": bool(state.get("budget_exhausted")),
+        "budget_exhaustion_reason": state.get("budget_exhaustion_reason", ""),
+        "budget_exhaustion_stage": state.get("budget_exhaustion_stage", ""),
+        "budget_elapsed_ms": state.get("budget_elapsed_ms", 0.0),
         **retry_snapshot(state),
     }
 

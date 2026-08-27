@@ -327,7 +327,8 @@ def run_ragas(cases: list[dict[str, Any]] | None = None) -> EvaluationReport:
         )
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
-            "Ragas is not installed or its API has moved. Install with: pip install ragas"
+            "Ragas is not installed or its API has moved. Run: "
+            "uv sync --locked --group evaluation"
         ) from exc
 
     from src.generation.llm_provider import get_chat_model
