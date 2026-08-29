@@ -19,7 +19,7 @@ features.
 - Risk routing, ambiguity clarification, bounded query-rewrite retries, and
   safe abstention.
 - Structured evidence grading before generation.
-- Grounded answer generation with closed structured-output contracts.
+- Grounded answer generation with validated structured-output contracts.
 - Claim-level citation verification, including deterministic checks for cited
   identifiers and numeric claims.
 - Static or deterministic dynamic LLM-provider routing with bounded fallback.
@@ -96,13 +96,18 @@ response is finalized only after its claims are supported.
 ### LLM provider routing and fallback
 
 Gemini is the default hosted provider. Groq is available for strict
-structured-output/evaluation workloads, and Ollama supports local/offline
-execution. `LLM_ROUTING_MODE=static` preserves manual `LLM_PROVIDER`
-selection. In `dynamic` mode, deterministic configuration selects one provider
-at the start of a graph run and keeps it consistent; eligible timeout, 429,
-unavailable-provider, and provider-side `json_validate_failed` errors may use
-the existing bounded provider-fallback chain. A fallback consumes a normal
-graph LLM-call permit. Static provider selection fails closed.
+structured-output/evaluation workloads, OpenRouter is an additional hosted
+fallback, and Ollama supports local/offline execution.
+`LLM_ROUTING_MODE=static` preserves manual `LLM_PROVIDER` selection. In
+`dynamic` mode, normal RAG routing is Gemini -> Groq -> OpenRouter -> Ollama;
+strict/evaluation routing is Groq -> Gemini -> OpenRouter -> Ollama. The
+deterministic route is selected at the start of a graph run and kept
+consistent; eligible timeout, 429, unavailable-provider, and Groq
+provider-side `json_validate_failed` errors may use the existing bounded
+provider-fallback chain. A fallback consumes a normal graph LLM-call permit.
+Static provider selection fails closed. Groq uses native strict JSON Schema
+output; Gemini, OpenRouter, and Ollama use the prompt-plus-JSON-parser path
+and still validate output against the project's schemas.
 
 ## Tech stack
 
@@ -112,7 +117,7 @@ graph LLM-call permit. Static provider selection fails closed.
   admission control.
 - `BAAI/bge-m3`, `BAAI/bge-reranker-v2-m3`, SentenceTransformers, Transformers,
   and PyTorch for local retrieval/reranking.
-- Gemini, Groq, Ollama, and optional Voyage integrations.
+- Gemini, Groq, OpenRouter, Ollama, and optional Voyage integrations.
 - Streamlit frontend, Ruff, Pytest, Docker Compose, and GitHub Actions.
 
 ## Project structure
@@ -167,6 +172,8 @@ GOOGLE_API_KEY=store-in-a-secret-manager
 
 # Optional providers
 GROQ_API_KEY=
+OPENROUTER_API_KEY=
+OPENROUTER_MODEL=nvidia/nemotron-3-super-120b-a12b:free
 OLLAMA_BASE_URL=http://localhost:11434
 VOYAGE_API_KEY=
 
@@ -247,7 +254,7 @@ Validated native v1 results:
   `evidence_sufficient=true`, `verification_status=supported`, two verified
   claims, zero unsupported claims, and reranking used.
 - Ruff passed.
-- Full Pytest passed: **852 passed, 133 skipped, 0 failed**.
+- Full Pytest passed: **865 passed, 133 skipped, 0 failed**.
 
 ### Evaluation methodology
 
