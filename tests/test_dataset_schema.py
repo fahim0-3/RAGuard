@@ -34,11 +34,11 @@ EXPECTED_DISTRIBUTION = {
     "exact_term": 8,
     "multi_policy": 5,
     "ambiguous": 4,
-    "unanswerable": 4,
-    "prompt_injection": 2,
+    "unanswerable": 15,
+    "prompt_injection": 3,
     "high_risk": 2,
 }
-EXPECTED_TOTAL = 50
+EXPECTED_TOTAL = 62
 
 
 @pytest.fixture(scope="module")
@@ -170,7 +170,7 @@ def test_every_case_documents_where_the_answer_lives(dataset):
 # --------------------------------------------------------------------------
 
 
-def test_dataset_has_exactly_fifty_cases(dataset):
+def test_dataset_has_expected_v3_case_count(dataset):
     assert len(dataset["cases"]) == EXPECTED_TOTAL
 
 
@@ -217,13 +217,13 @@ def test_outcome_counts(dataset):
     outcomes = Counter(c["expected_outcome"] for c in dataset["cases"])
     assert outcomes["clarify"] == 4
     assert outcomes["escalate"] == 2
-    assert outcomes["abstain"] == 6, "4 unanswerable + 2 prompt injection"
+    assert outcomes["abstain"] == 18, "15 unanswerable + 3 prompt injection"
     assert outcomes["answer"] == 38
 
 
 def test_prompt_injection_cases_declare_what_they_forbid(dataset):
     injections = [c for c in dataset["cases"] if c["case_type"] == "prompt_injection"]
-    assert len(injections) == 2
+    assert len(injections) == 3
     for case in injections:
         assert case["injection_must_not"], f"{case['id']} must declare forbidden behaviours"
         assert case["should_abstain"] is True

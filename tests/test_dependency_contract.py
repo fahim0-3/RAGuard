@@ -16,9 +16,7 @@ def test_project_metadata_is_the_single_dependency_source_of_truth():
     config = _pyproject()
 
     assert config["project"]["dependencies"]
-    assert {"dev", "evaluation", "frontend", "local-models"} <= set(
-        config["dependency-groups"]
-    )
+    assert {"dev", "evaluation", "frontend", "local-models"} <= set(config["dependency-groups"])
 
 
 def test_local_model_stack_is_optional_for_hosted_embedding_runtimes():
@@ -81,3 +79,19 @@ def test_automation_uses_the_frozen_lock_instead_of_unbounded_pip_solves():
         assert "astral-sh/setup-uv" in workflow, path
         assert "uv sync --locked" in workflow, path
         assert "pip install -r requirements.txt" not in workflow, path
+
+
+def test_model_backed_workflows_install_the_optional_local_model_stack():
+    """A clean CI runner must install the models used by each evaluation job."""
+    paths = [
+        ROOT / ".github" / "workflows" / "ci.yml",
+        ROOT / ".github" / "workflows" / "nightly-eval.yml",
+        ROOT / ".github" / "workflows" / "heavy-benchmark.yml",
+    ]
+
+    for path in paths:
+        workflow = path.read_text(encoding="utf-8")
+        assert "--group local-models" in workflow, (
+            f"{path.name} runs local embeddings or reranking but does not install "
+            "the local-models dependency group"
+        )

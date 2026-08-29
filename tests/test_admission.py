@@ -19,12 +19,21 @@ def test_admission_limits_concurrent_work():
 def test_admission_limits_each_peer_within_a_minute():
     guard = QueryAdmission()
 
-    assert guard.try_acquire("127.0.0.1", max_concurrency=3, requests_per_minute=2, now=100.0) is None
+    assert (
+        guard.try_acquire("127.0.0.1", max_concurrency=3, requests_per_minute=2, now=100.0) is None
+    )
     guard.release()
-    assert guard.try_acquire("127.0.0.1", max_concurrency=3, requests_per_minute=2, now=101.0) is None
+    assert (
+        guard.try_acquire("127.0.0.1", max_concurrency=3, requests_per_minute=2, now=101.0) is None
+    )
     guard.release()
-    assert guard.try_acquire("127.0.0.1", max_concurrency=3, requests_per_minute=2, now=102.0) == "rate_limited"
-    assert guard.try_acquire("127.0.0.2", max_concurrency=3, requests_per_minute=2, now=102.0) is None
+    assert (
+        guard.try_acquire("127.0.0.1", max_concurrency=3, requests_per_minute=2, now=102.0)
+        == "rate_limited"
+    )
+    assert (
+        guard.try_acquire("127.0.0.2", max_concurrency=3, requests_per_minute=2, now=102.0) is None
+    )
 
 
 class FakeRedis:
@@ -64,7 +73,10 @@ def test_redis_admission_returns_safe_rejection_codes():
     redis = FakeRedis(1, 2)
     guard = RedisQueryAdmission("redis://unused", namespace="test", lease_seconds=300, client=redis)  # type: ignore[arg-type]
 
-    assert guard.acquire("127.0.0.1", max_concurrency=1, requests_per_minute=1).reason == "rate_limited"
+    assert (
+        guard.acquire("127.0.0.1", max_concurrency=1, requests_per_minute=1).reason
+        == "rate_limited"
+    )
     assert guard.acquire("127.0.0.2", max_concurrency=1, requests_per_minute=1).reason == "busy"
 
 
@@ -74,7 +86,10 @@ def test_redis_admission_fails_closed_when_the_backend_is_unavailable():
             raise RedisError("connection refused")
 
     guard = RedisQueryAdmission(
-        "redis://unused", namespace="test", lease_seconds=300, client=UnavailableRedis()  # type: ignore[arg-type]
+        "redis://unused",
+        namespace="test",
+        lease_seconds=300,
+        client=UnavailableRedis(),  # type: ignore[arg-type]
     )
 
     assert guard.acquire("127.0.0.1", max_concurrency=1, requests_per_minute=1) == AdmissionLease(

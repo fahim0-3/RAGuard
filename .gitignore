@@ -18,8 +18,12 @@ env/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.pytest-work/
+.uv-cache/
+.uv-python/
 .coverage
 htmlcov/
+raguard.egg-info/
 
 # --- Model and data caches ---
 .cache/
@@ -35,6 +39,12 @@ reports/*
 !reports/reranking_comparison.json
 !reports/golden_baseline.json
 !src/evaluation/baseline.json
+
+# --- Local review captures ---
+clcs
+diff_review.txt
+.claude/settings.local.json
+*.before-cuda
 
 # --- Editors and OS ---
 .vscode/

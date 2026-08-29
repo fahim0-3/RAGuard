@@ -43,8 +43,10 @@ def graph_state(**overrides):
         "answer_confidence": 0.9,
         "evidence_grade": {"sufficient": True, "confidence": 0.95},
         "verification_result": {
-            "checked": True, "supported": True,
-            "supported_claim_count": 1, "unsupported_claim_count": 0,
+            "checked": True,
+            "supported": True,
+            "supported_claim_count": 1,
+            "unsupported_claim_count": 0,
         },
         "retrieved_chunks": [chunk()],
         "reranker_used": True,
@@ -96,9 +98,7 @@ def client(monkeypatch):
     # test_model_readiness.py.
     monkeypatch.setattr("api.main.is_model_loaded", lambda: True)
     monkeypatch.setattr("api.main.is_reranker_model_loaded", lambda: True)
-    monkeypatch.setattr(
-        "api.main.loaded_reranker_model_name", lambda: "test-reranker"
-    )
+    monkeypatch.setattr("api.main.loaded_reranker_model_name", lambda: "test-reranker")
     from api.admission import query_admission
     from api.observability import runtime_metrics
 
@@ -199,6 +199,23 @@ def test_ready_is_ready_when_dependencies_are_present(client, monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["status"] == "ready"
+
+
+def test_ready_reports_voyage_as_the_active_retrieval_reranker(client, monkeypatch):
+    monkeypatch.setattr("api.main.count_chunks", lambda: 22)
+    monkeypatch.setattr("api.main.is_model_loaded", lambda: True)
+    use_settings(
+        llm_provider="ollama",
+        reranker_provider="voyage",
+        voyage_rerank_model="rerank-2.5-lite",
+    )
+
+    response = client.get("/ready")
+
+    assert response.status_code == 200
+    retrieval = response.json()["checks"]["retrieval"]
+    assert retrieval["reranker"] == "rerank-2.5-lite"
+    assert retrieval["reranker_provider"] == "voyage"
 
 
 def test_ready_flags_a_missing_api_key(client, monkeypatch):
@@ -367,9 +384,7 @@ def test_non_answer_outcomes_require_more_information(client):
 
 
 def test_retry_information_is_exposed(client):
-    use_graph(
-        StubGraph(graph_state(retry_count=2, rewritten_queries=["refund processing time"]))
-    )
+    use_graph(StubGraph(graph_state(retry_count=2, rewritten_queries=["refund processing time"])))
 
     body = client.post("/query", json={"query": "a question"}).json()
 
@@ -432,7 +447,7 @@ def test_no_stack_trace_reaches_the_client(client):
 
     body = client.post("/query", json={"query": "a question here"}).text
 
-    for leak in ("Traceback", "File \"", "line ", ".py"):
+    for leak in ("Traceback", 'File "', "line ", ".py"):
         assert leak not in body
 
 
@@ -475,8 +490,10 @@ def test_unsupported_verification_is_reported(client):
             graph_state(
                 final_outcome="abstain",
                 verification_result={
-                    "checked": True, "supported": False,
-                    "supported_claim_count": 0, "unsupported_claim_count": 2,
+                    "checked": True,
+                    "supported": False,
+                    "supported_claim_count": 0,
+                    "unsupported_claim_count": 2,
                 },
             )
         )
@@ -499,9 +516,56 @@ def test_trace_exposes_the_node_path(client):
     trace = client.post("/query", json={"query": "a question here"}).json()["trace"]
 
     assert [step["node"] for step in trace] == [
-        "sanitize_and_classify", "risk_router", "generate_answer"
+        "sanitize_and_classify",
+        "risk_router",
+        "generate_answer",
     ]
     assert trace[0]["step"] == 1
+
+
+def test_query_exposes_bounded_stage_and_retrieval_latency(client):
+    use_graph(
+        StubGraph(
+            graph_state(
+                stage_latency_samples_ms={
+                    "sanitize_and_classify": [1.25],
+                    "risk_router": [2.0, -1.0, float("nan")],
+                    "generate_answer": [30.5],
+                    "customer-secret-stage": [999.0],
+                },
+                retrieval_latency_samples_ms={
+                    "query_embedding": [10.0],
+                    "vector_search": [20.0],
+                    "query=private": [500.0],
+                },
+            )
+        )
+    )
+
+    body = client.post("/query", json={"query": "a question here"}).json()
+
+    assert body["stage_latency_ms"]["sanitize_and_classify"] == {
+        "count": 1,
+        "total_ms": 1.25,
+        "average_ms": 1.25,
+        "max_ms": 1.25,
+    }
+    assert body["stage_latency_ms"]["risk_router"]["count"] == 1
+    assert body["retrieval_latency_ms"]["vector_search"]["total_ms"] == 20.0
+    assert "customer-secret-stage" not in body["stage_latency_ms"]
+    assert "query=private" not in body["retrieval_latency_ms"]
+    assert body["trace"][0]["duration_ms"] == 1.25
+    assert "private" not in str(body).lower()
+
+
+def test_legacy_graph_state_keeps_empty_latency_contract(client):
+    use_graph(StubGraph(graph_state()))
+
+    body = client.post("/query", json={"query": "a question here"}).json()
+
+    assert body["stage_latency_ms"] == {}
+    assert body["retrieval_latency_ms"] == {}
+    assert all(step["duration_ms"] == 0.0 for step in body["trace"])
 
 
 def test_response_carries_no_prompts_or_chunk_bodies_beyond_excerpts(client):
@@ -519,9 +583,9 @@ def test_response_schema_is_closed(client):
     """Extra graph state cannot leak through: the model forbids unknown fields."""
     use_graph(StubGraph(graph_state(secret_internal_field="should not appear")))
 
-    assert "secret_internal_field" not in client.post(
-        "/query", json={"query": "a question here"}
-    ).text
+    assert (
+        "secret_internal_field" not in client.post("/query", json={"query": "a question here"}).text
+    )
 
 
 def test_graph_failure_reason_is_allow_listed(client):
@@ -562,9 +626,7 @@ def test_request_budget_exhaustion_is_exposed_as_a_bounded_abstention(client):
     assert body["llm_calls_used"] == body["llm_call_limit"] == 2
     assert body["budget_exhausted"] is True
 
-    metrics = client.get(
-        "/admin/metrics", headers={"X-Admin-Key": "metrics-key"}
-    ).json()
+    metrics = client.get("/admin/metrics", headers={"X-Admin-Key": "metrics-key"}).json()
     assert metrics["budget"]["llm_calls_total"] == 2
     assert metrics["budget"]["exhausted_total"] == 1
 
@@ -576,8 +638,13 @@ def test_request_budget_exhaustion_is_exposed_as_a_bounded_abstention(client):
 
 @pytest.mark.parametrize(
     ("method", "path"),
-    [("post", "/retrieve"), ("post", "/admin/reindex"), ("post", "/admin/warmup"),
-     ("get", "/admin/metrics"), ("get", "/metrics")],
+    [
+        ("post", "/retrieve"),
+        ("post", "/admin/reindex"),
+        ("post", "/admin/warmup"),
+        ("get", "/admin/metrics"),
+        ("get", "/metrics"),
+    ],
 )
 def test_operational_endpoints_are_disabled_without_an_admin_key(client, method, path):
     response = (
@@ -604,7 +671,14 @@ def test_operational_endpoints_reject_an_incorrect_admin_key(client):
 
 def test_admin_metrics_expose_aggregates_without_customer_content(client):
     use_settings(admin_api_key="metrics-key")
-    use_graph(StubGraph())
+    use_graph(
+        StubGraph(
+            graph_state(
+                stage_latency_samples_ms={"generate_answer": [10.0, 30.0]},
+                retrieval_latency_samples_ms={"vector_search": [5.0]},
+            )
+        )
+    )
 
     assert client.post("/query", json={"query": "How long do refunds take?"}).status_code == 200
     response = client.get("/admin/metrics", headers={"X-Admin-Key": "metrics-key"})
@@ -615,6 +689,12 @@ def test_admin_metrics_expose_aggregates_without_customer_content(client):
     assert body["queries"]["completed"] == 1
     assert body["queries"]["outcomes"] == {"answer": 1}
     assert body["grounding"]["verification"] == {"supported": 1}
+    assert body["stage_latency_ms"]["generate_answer"] == {
+        "count": 2,
+        "average": 20.0,
+        "max": 30.0,
+    }
+    assert body["retrieval_latency_ms"]["vector_search"]["average"] == 5.0
     assert "refund" not in str(body).lower()
 
 
@@ -636,7 +716,7 @@ def test_admin_metrics_classify_admission_rejections(client, monkeypatch):
 
 def test_prometheus_metrics_are_scrapeable_and_private(client):
     use_settings(admin_api_key="metrics-key")
-    use_graph(StubGraph())
+    use_graph(StubGraph(graph_state(stage_latency_samples_ms={"generate_answer": [25.0]})))
 
     assert client.post("/query", json={"query": "How long do refunds take?"}).status_code == 200
     response = client.get("/metrics", headers={"X-Admin-Key": "metrics-key"})
@@ -646,6 +726,8 @@ def test_prometheus_metrics_are_scrapeable_and_private(client):
     assert "raguard_queries_admitted_total 1" in response.text
     assert 'raguard_query_outcomes_total{outcome="answer"} 1' in response.text
     assert "raguard_query_latency_seconds_bucket" in response.text
+    assert 'raguard_stage_latency_seconds_sum{stage="generate_answer"} 0.025000' in response.text
+    assert "customer-secret-stage" not in response.text
     assert "refund" not in response.text.lower()
 
 
@@ -660,7 +742,9 @@ def test_trace_context_is_propagated_without_customer_content(client):
     )
 
     assert response.status_code == 200
-    assert response.headers.get("traceparent", "").startswith("00-0af7651916cd43dd8448eb211c80319c-")
+    assert response.headers.get("traceparent", "").startswith(
+        "00-0af7651916cd43dd8448eb211c80319c-"
+    )
     assert "How long" not in response.headers.get("traceparent", "")
 
 

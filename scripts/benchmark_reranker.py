@@ -8,7 +8,7 @@ be reviewed before changing the service configuration.
 Examples:
 
     python scripts/benchmark_reranker.py --device cpu --limit 12
-    python scripts/benchmark_reranker.py --device cuda --limit 12
+    python scripts/benchmark_reranker.py --device cuda --batch-size 32 --limit 12
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ def _warm_reranker(
     return elapsed_ms
 
 
-def run_benchmark(device: str, limit: int) -> dict[str, Any]:
+def run_benchmark(device: str, limit: int, batch_size: int | None = None) -> dict[str, Any]:
     """Benchmark only reranker inference; retrieval happens outside the timer."""
     _require_device(device)
     cases = _cases(limit)
@@ -83,7 +83,7 @@ def run_benchmark(device: str, limit: int) -> dict[str, Any]:
 
     settings = get_settings()
     retriever = get_hybrid_retriever()
-    reranker = CrossEncoderReranker(device=device)
+    reranker = CrossEncoderReranker(device=device, batch_size=batch_size)
 
     first = cases[0]
     warmup_candidates = retriever.retrieve(first["question"])
@@ -107,6 +107,8 @@ def run_benchmark(device: str, limit: int) -> dict[str, Any]:
                 "candidate_count": result.candidate_count,
                 "returned_count": len(result.chunks),
                 "latency_ms": round(latency_ms, 1),
+                "queue_wait_ms": round(result.queue_wait_ms, 1),
+                "inference_latency_ms": round(result.inference_latency_ms, 1),
             }
         )
 
@@ -114,7 +116,7 @@ def run_benchmark(device: str, limit: int) -> dict[str, Any]:
         "report": "reranker_device_benchmark",
         "timestamp": datetime.now(UTC).isoformat(),
         "model": reranker._loaded_model_name,  # Loaded model is benchmark metadata.
-        "device": device,
+        "device": reranker.device,
         "dataset": {
             "path": "src/evaluation/golden_dataset.json",
             "cases": len(cases),
@@ -122,8 +124,9 @@ def run_benchmark(device: str, limit: int) -> dict[str, Any]:
         "configuration": {
             "embedding_device": settings.model_device,
             "rerank_candidate_top_k": settings.rerank_candidate_top_k,
-            "reranker_batch_size": settings.reranker_batch_size,
+            "reranker_batch_size": reranker.batch_size,
             "reranker_max_length": settings.reranker_max_length,
+            "reranker_max_concurrency": reranker.max_concurrency,
         },
         "model_load_and_warmup_ms": round(model_load_and_warmup_ms, 1),
         "inference_latency_ms": {
@@ -139,6 +142,12 @@ def main() -> int:
     settings = get_settings()
     parser = argparse.ArgumentParser(description="Benchmark RAGuard reranker latency by device")
     parser.add_argument("--device", default=settings.resolved_reranker_device)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=0,
+        help="positive override; 0 uses the device-aware service default",
+    )
     parser.add_argument("--limit", type=int, default=12, help="0 runs all answerable cases")
     parser.add_argument(
         "--output",
@@ -149,9 +158,11 @@ def main() -> int:
 
     if args.limit < 0:
         parser.error("--limit must be zero or greater")
+    if args.batch_size < 0:
+        parser.error("--batch-size must be zero or greater")
 
     try:
-        payload = run_benchmark(args.device, args.limit)
+        payload = run_benchmark(args.device, args.limit, args.batch_size or None)
     except RuntimeError as exc:
         print(f"BENCHMARK_BLOCKED: {exc}", file=sys.stderr)
         return 2
@@ -163,8 +174,10 @@ def main() -> int:
     print(f"model: {payload['model']}")
     print(f"cases: {payload['dataset']['cases']}")
     print(f"model load + warm-up: {payload['model_load_and_warmup_ms']:.1f} ms")
-    print(f"inference: mean={metrics['mean']:.1f} ms p50={metrics['p50']:.1f} ms "
-          f"p95={metrics['p95']:.1f} ms")
+    print(
+        f"inference: mean={metrics['mean']:.1f} ms p50={metrics['p50']:.1f} ms "
+        f"p95={metrics['p95']:.1f} ms"
+    )
     print(f"report: {args.output}")
     return 0
 

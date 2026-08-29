@@ -77,9 +77,7 @@ def test_answer_is_presented_as_success():
 
 
 def test_clarify_is_informational_not_a_failure():
-    view = present(
-        api_response(outcome="clarify", answer="Is this about a refund or a return?")
-    )
+    view = present(api_response(outcome="clarify", answer="Is this about a refund or a return?"))
 
     assert view.kind == "info"
     assert view.is_error is False

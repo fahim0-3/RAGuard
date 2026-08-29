@@ -105,7 +105,9 @@ def _embed_gemini(texts: list[str], *, task_type: str) -> list[list[float]]:
         ),
     )
     vectors = [list(item.values) for item in response.embeddings or []]
-    if len(vectors) != len(texts) or any(len(vector) != settings.vector_dimension for vector in vectors):
+    if len(vectors) != len(texts) or any(
+        len(vector) != settings.vector_dimension for vector in vectors
+    ):
         raise RuntimeError("Gemini embedding response has an unexpected dimension")
     return [_normalise(vector) for vector in vectors]
 
@@ -141,7 +143,11 @@ def is_model_loaded() -> bool:
     an in-flight load, and reading one reference is atomic under the GIL.
     """
     settings = get_settings()
-    return bool(settings.google_api_key) if settings.embedding_provider == "gemini" else _model is not None
+    return (
+        bool(settings.google_api_key)
+        if settings.embedding_provider == "gemini"
+        else _model is not None
+    )
 
 
 def model_load_error() -> str | None:

@@ -82,9 +82,7 @@ def test_release_workflow_builds_both_images_after_contract_tests():
 
     jobs = workflow["jobs"]
     assert jobs["images"]["needs"] == "release-contract"
-    components = {
-        item["component"] for item in jobs["images"]["strategy"]["matrix"]["include"]
-    }
+    components = {item["component"] for item in jobs["images"]["strategy"]["matrix"]["include"]}
     assert components == {"api", "frontend"}
     assert jobs["smoke"]["needs"] == "images"
 
@@ -121,7 +119,9 @@ def test_render_blueprint_has_the_required_remote_resources():
 
 def test_render_blueprint_prompts_for_secrets_instead_of_committing_them():
     blueprint = load_contract_yaml(ROOT / "render.yaml")
-    api = next(service for service in blueprint["services"] if service["name"].startswith("raguard-api"))
+    api = next(
+        service for service in blueprint["services"] if service["name"].startswith("raguard-api")
+    )
     env = {item["key"]: item for item in api["envVars"]}
 
     assert env["DATABASE_URL"] == {"key": "DATABASE_URL", "sync": False}

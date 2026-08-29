@@ -74,9 +74,7 @@ def test_non_object_payload_is_rejected():
     assert structured_output_errors("just a string")
 
 
-@pytest.mark.parametrize(
-    "field", ["answer", "citations", "abstained", "confidence", "outcome"]
-)
+@pytest.mark.parametrize("field", ["answer", "citations", "abstained", "confidence", "outcome"])
 def test_every_required_field_is_enforced(field):
     payload = valid_answer()
     del payload[field]
@@ -106,7 +104,9 @@ def test_non_string_citation_is_rejected():
 
 def test_abstention_carrying_citations_is_rejected():
     payload = valid_answer(abstained=True, outcome="abstain", citations=["refund_policy.txt#1"])
-    assert any("abstention must not carry citations" in e for e in structured_output_errors(payload))
+    assert any(
+        "abstention must not carry citations" in e for e in structured_output_errors(payload)
+    )
 
 
 def test_empty_non_abstaining_answer_is_rejected():
@@ -161,9 +161,10 @@ def test_latency_stats_of_nothing_are_zero():
 
 
 def test_latency_ordering_does_not_affect_the_result():
-    assert latency_stats([300.0, 100.0, 200.0]).to_dict() == latency_stats(
-        [100.0, 200.0, 300.0]
-    ).to_dict()
+    assert (
+        latency_stats([300.0, 100.0, 200.0]).to_dict()
+        == latency_stats([100.0, 200.0, 300.0]).to_dict()
+    )
 
 
 # --------------------------------------------------------------------------
@@ -192,9 +193,7 @@ def test_unmeasured_metric_is_not_counted_as_a_regression():
 
 
 def test_regressions_are_ordered_worst_first():
-    regressions = find_regressions(
-        {"a": 0.9, "b": 0.1, "c": 0.5}, {"a": 1.0, "b": 1.0, "c": 1.0}
-    )
+    regressions = find_regressions({"a": 0.9, "b": 0.1, "c": 0.5}, {"a": 1.0, "b": 1.0, "c": 1.0})
     assert [r.metric for r in regressions] == ["b", "c", "a"]
 
 

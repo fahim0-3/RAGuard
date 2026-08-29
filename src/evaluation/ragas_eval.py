@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import logging
 import time
+import warnings
 from typing import Any
 
+from src.config import get_settings
 from src.evaluation.ragas_adapter import AdapterReport, build_ragas_samples
 
 logger = logging.getLogger(__name__)
@@ -94,10 +96,41 @@ def check_ragas_available() -> RagasAvailability:
         return RagasAvailability(
             False,
             version,
-            f"ragas {version} is installed but fails to import: {type(exc).__name__}: {exc}",
+            f"ragas {version} is installed but fails to import: {type(exc).__name__}",
         )
 
     return RagasAvailability(True, version, None)
+
+
+def _build_ragas_embeddings() -> Any:
+    """Build the embedding backend used by answer relevancy explicitly.
+
+    RAGAS otherwise builds its default OpenAI embedder for ResponseRelevancy.
+    RAGuard's scheduled evaluation supplies Gemini credentials, so that default
+    both fails and would measure a different embedding configuration.
+    """
+    settings = get_settings()
+    if settings.llm_provider != "gemini":
+        raise RuntimeError("RAGAS_EMBEDDINGS_REQUIRE_GEMINI")
+    if not settings.google_api_key:
+        raise RuntimeError("RAGAS_EMBEDDINGS_NOT_CONFIGURED")
+
+    from langchain_google_genai import GoogleGenerativeAIEmbeddings
+    from ragas.embeddings.base import LangchainEmbeddingsWrapper
+
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model=settings.gemini_embedding_model,
+        api_key=settings.google_api_key,
+        task_type="SEMANTIC_SIMILARITY",
+        output_dimensionality=settings.vector_dimension,
+    )
+    # RAGAS 0.4.3 marks this general-purpose adapter as deprecated even though
+    # its replacement has no Google AI Studio client path. Keep the warning out
+    # of clean evaluation output while the lock remains on this compatibility
+    # pair; the explicit client still avoids its OpenAI default.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return LangchainEmbeddingsWrapper(embeddings)
 
 
 def run_ragas_evaluation(
@@ -149,13 +182,33 @@ def run_ragas_evaluation(
     try:
         from ragas import EvaluationDataset, evaluate
         from ragas.llms import LangchainLLMWrapper
-        from ragas.metrics import Faithfulness, ResponseRelevancy
+
+        # These public exports are deprecated in 0.4.3 but remain the metric
+        # implementations compatible with LangChain Gemini wrappers. The newer
+        # collection API exposes AnswerRelevancy, not ResponseRelevancy.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            from ragas.metrics import Faithfulness, ResponseRelevancy
 
         from src.generation.llm_factory import get_chat_model
+        from src.generation.llm_routing import workload_context
 
+        embeddings = _build_ragas_embeddings()
         dataset = EvaluationDataset.from_list([s.to_dict() for s in adapter.samples])
-        judge = LangchainLLMWrapper(get_chat_model("judge"))
-        result = evaluate(dataset=dataset, metrics=[Faithfulness(), ResponseRelevancy()], llm=judge)
+        # RAGAS is an evaluation workload even though its judge is invoked by
+        # the optional library after construction. Bind the deterministic
+        # selection while constructing that provider-specific model.
+        with workload_context("evaluation"):
+            judge = LangchainLLMWrapper(get_chat_model("judge"))
+        result = evaluate(
+            dataset=dataset,
+            metrics=[
+                Faithfulness(llm=judge),
+                ResponseRelevancy(llm=judge, embeddings=embeddings),
+            ],
+            llm=judge,
+            embeddings=embeddings,
+        )
         scores = {k: float(v) for k, v in dict(result).items() if isinstance(v, int | float)}
         return {
             **base,
@@ -171,6 +224,8 @@ def run_ragas_evaluation(
             "status": "RAGAS_EXECUTION_FAILED",
             "metrics": {},
             "metric_status": {m["metric"]: "UNVALIDATED" for m in RAGAS_METRIC_PLAN},
-            "error": f"{type(exc).__name__}: {exc}",
+            # Reports are uploaded as CI artifacts. Keep potentially sensitive
+            # provider and connection details in logs, not in the artifact.
+            "error": type(exc).__name__,
             "latency_ms": round((time.perf_counter() - started) * 1000.0, 1),
         }

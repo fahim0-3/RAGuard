@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -29,6 +30,7 @@ from src.retrieval.embeddings import embed_query
 from src.retrieval.rrf import reciprocal_rank_fusion, rrf_config
 from src.retrieval.types import RetrievedChunk
 from src.retrieval.vector_store import dense_search
+from src.timing import elapsed_ms
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,7 @@ class RetrievalDiagnostics:
     fused: list[RetrievedChunk] = field(default_factory=list)
     deduplication: DeduplicationResult | None = None
     results: list[RetrievedChunk] = field(default_factory=list)
+    timings_ms: dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -61,6 +64,7 @@ class RetrievalDiagnostics:
                 [d.to_dict() for d in self.deduplication.dropped] if self.deduplication else []
             ),
             "result_count": len(self.results),
+            "timings_ms": dict(self.timings_ms),
         }
 
 
@@ -103,14 +107,26 @@ class HybridRetriever:
         self, query: str, top_k: int | None = None
     ) -> RetrievalDiagnostics:
         """Retrieve and return every intermediate stage."""
-        dense_hits = dense_search(embed_query(query), self.dense_top_k)
-        sparse_hits = get_bm25_index().search(query, self.sparse_top_k)
+        started = time.perf_counter()
+        embedding = embed_query(query)
+        query_embedding_ms = elapsed_ms(started)
 
-        fused = reciprocal_rank_fusion(
-            {"dense": dense_hits, "sparse": sparse_hits}, k=self.rrf_k
-        )
+        started = time.perf_counter()
+        dense_hits = dense_search(embedding, self.dense_top_k)
+        vector_search_ms = elapsed_ms(started)
+
+        started = time.perf_counter()
+        sparse_hits = get_bm25_index().search(query, self.sparse_top_k)
+        bm25_search_ms = elapsed_ms(started)
+
+        started = time.perf_counter()
+        fused = reciprocal_rank_fusion({"dense": dense_hits, "sparse": sparse_hits}, k=self.rrf_k)
+        rrf_fusion_ms = elapsed_ms(started)
+
+        started = time.perf_counter()
         dedup = self._dedupe(fused)
         results = dedup.kept[: top_k or self.final_top_k]
+        deduplication_ms = elapsed_ms(started)
 
         logger.debug(
             "query=%r dense=%d sparse=%d fused=%d dropped=%d final=%d",
@@ -128,14 +144,19 @@ class HybridRetriever:
             fused=fused,
             deduplication=dedup,
             results=results,
+            timings_ms={
+                "query_embedding": query_embedding_ms,
+                "vector_search": vector_search_ms,
+                "bm25_search": bm25_search_ms,
+                "rrf_fusion": rrf_fusion_ms,
+                "deduplication": deduplication_ms,
+            },
         )
 
     def retrieve(self, query: str, top_k: int | None = None) -> list[RetrievedChunk]:
         return self.retrieve_with_diagnostics(query, top_k=top_k).results
 
-    def retrieve_many(
-        self, queries: list[str], top_k: int | None = None
-    ) -> list[RetrievedChunk]:
+    def retrieve_many(self, queries: list[str], top_k: int | None = None) -> list[RetrievedChunk]:
         """Retrieve for several query variants and fuse the results.
 
         Used by the self-healing loop after query rewriting: each variant is an

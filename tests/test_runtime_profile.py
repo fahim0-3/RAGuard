@@ -26,6 +26,23 @@ def test_unknown_runtime_profile_is_rejected():
         Settings(_env_file=None, RAGUARD_RUNTIME_PROFILE="typo")
 
 
+def test_free_hosted_pilot_caps_only_the_effective_graph_call_limit():
+    settings = Settings(
+        _env_file=None,
+        graph_llm_call_limit=8,
+        llm_execution_profile="free_hosted_pilot",
+    )
+
+    assert settings.graph_llm_call_limit == 8
+    assert settings.effective_graph_llm_call_limit == 4
+
+
+def test_baseline_keeps_the_configured_graph_call_limit():
+    settings = Settings(_env_file=None, graph_llm_call_limit=8, llm_execution_profile="baseline")
+
+    assert settings.effective_graph_llm_call_limit == 8
+
+
 def test_reranker_uses_the_profile_resolved_model(monkeypatch):
     settings = Settings(_env_file=None, RAGUARD_RUNTIME_PROFILE="local_compact")
     monkeypatch.setattr("src.reranking.cross_encoder.get_settings", lambda: settings)
@@ -33,6 +50,17 @@ def test_reranker_uses_the_profile_resolved_model(monkeypatch):
     reranker = CrossEncoderReranker()
 
     assert reranker.model_name == settings.reranker_fallback_model
+
+
+def test_auto_batch_size_is_device_aware_without_changing_cpu_defaults(monkeypatch):
+    settings = Settings(_env_file=None, reranker_batch_size=0)
+    monkeypatch.setattr("src.reranking.cross_encoder.get_settings", lambda: settings)
+
+    cpu_reranker = CrossEncoderReranker(model=object(), device="cpu")
+    cuda_reranker = CrossEncoderReranker(model=object(), device="cuda")
+
+    assert cpu_reranker.batch_size == 16
+    assert cuda_reranker.batch_size == 32
 
 
 def test_warmup_exposes_loaded_and_failed_states():

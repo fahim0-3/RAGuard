@@ -29,6 +29,7 @@ __all__ = [
     "QueryRequest",
     "QueryResponse",
     "ReadyResponse",
+    "TimingStatsOut",
     "TraceStep",
 ]
 
@@ -109,6 +110,18 @@ class TraceStep(BaseModel):
 
     step: int
     node: str
+    duration_ms: float = 0.0
+
+
+class TimingStatsOut(BaseModel):
+    """Bounded numeric latency summary for one allow-listed operational stage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    count: int = 0
+    total_ms: float = 0.0
+    average_ms: float = 0.0
+    max_ms: float = 0.0
 
 
 class QueryResponse(BaseModel):
@@ -141,6 +154,9 @@ class QueryResponse(BaseModel):
     failure_reason: str | None = None
     trace: list[TraceStep] = Field(default_factory=list)
     latency_ms: float = 0.0
+    stage_latency_ms: dict[str, TimingStatsOut] = Field(default_factory=dict)
+    retrieval_latency_ms: dict[str, TimingStatsOut] = Field(default_factory=dict)
+    unattributed_latency_ms: float = 0.0
     prompt_version: str = ""
     llm_calls_used: int = 0
     llm_call_limit: int = 0

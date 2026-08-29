@@ -38,14 +38,18 @@ node; only the deterministic routers decide that.
 
 from __future__ import annotations
 
+import functools
 import logging
+import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
 from src.config import get_settings
+from src.generation.llm_routing import route_context
 from src.retrieval.types import RetrievedChunk
 from src.self_healing.abstention import abstention_message
 from src.self_healing.ambiguity_detector import detect_ambiguity
@@ -76,6 +80,12 @@ from src.self_healing.state import (
     initial_state,
 )
 from src.self_healing.verification import Verifier, get_default_verifier
+from src.timing import (
+    GRAPH_STAGE_NAMES,
+    RETRIEVAL_STAGE_NAMES,
+    elapsed_ms,
+    sanitise_timing_samples,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,21 +113,7 @@ NODE_ABSTAIN = "abstain"
 NODE_CLARIFY = "clarify"
 NODE_ESCALATE = "escalate"
 
-NODE_NAMES: tuple[str, ...] = (
-    NODE_SANITIZE,
-    NODE_RISK,
-    NODE_AMBIGUITY,
-    NODE_RETRIEVE,
-    NODE_RERANK,
-    NODE_GRADER,
-    NODE_REWRITER,
-    NODE_GENERATE,
-    NODE_VERIFY,
-    NODE_FINALIZE,
-    NODE_ABSTAIN,
-    NODE_CLARIFY,
-    NODE_ESCALATE,
-)
+NODE_NAMES: tuple[str, ...] = GRAPH_STAGE_NAMES
 
 #: Control characters and markdown fencing that only ever appear in an attempt
 #: to restructure the prompt. Stripping them is hygiene, not a security control:
@@ -136,6 +132,27 @@ def _stamp(state: GraphState, key: str) -> dict[str, str]:
     stamps = dict(state.get("timestamps") or {})
     stamps[key] = _now()
     return stamps
+
+
+def _timed_node(
+    stage: str, node: Callable[[GraphState], dict[str, Any]]
+) -> Callable[[GraphState], dict[str, Any]]:
+    """Measure one graph-node invocation with a monotonic retry-safe sample."""
+
+    @functools.wraps(node)
+    def timed(state: GraphState) -> dict[str, Any]:
+        started = time.perf_counter()
+        try:
+            update = dict(node(state))
+        except Exception:
+            logger.info(
+                "Graph stage failed [stage=%s, duration_ms=%.3f]", stage, elapsed_ms(started)
+            )
+            raise
+        update["stage_latency_samples_ms"] = {stage: [elapsed_ms(started)]}
+        return update
+
+    return timed
 
 
 def _provider_permit(stage: str) -> LLMCallPermit:
@@ -228,7 +245,18 @@ def hybrid_retrieve(state: GraphState) -> dict[str, Any]:
 
     query = state.get("current_query") or state.get("original_query", "")
     try:
-        chunks = get_hybrid_retriever().retrieve(query)
+        retriever = get_hybrid_retriever()
+        if hasattr(retriever, "retrieve_with_diagnostics"):
+            diagnostics = retriever.retrieve_with_diagnostics(query)
+            chunks = list(diagnostics.results)
+            retrieval_samples = sanitise_timing_samples(
+                {name: [value] for name, value in diagnostics.timings_ms.items()},
+                RETRIEVAL_STAGE_NAMES,
+            )
+        else:
+            # Compatibility seam for test doubles and third-party retrievers.
+            chunks = retriever.retrieve(query)
+            retrieval_samples = {}
     except Exception:  # noqa: BLE001 - retrieval outage must not crash the graph
         logger.exception("Retrieval failed")
         return {
@@ -243,6 +271,7 @@ def hybrid_retrieve(state: GraphState) -> dict[str, Any]:
     return {
         "retrieved_chunks": chunks,
         "reranked": False,
+        "retrieval_latency_samples_ms": retrieval_samples,
         "timestamps": _stamp(state, "retrieved_at"),
         "node_sequence": [NODE_RETRIEVE],
     }
@@ -256,15 +285,32 @@ def rerank(state: GraphState) -> dict[str, Any]:
 
     chunks: list[RetrievedChunk] = list(state.get("retrieved_chunks") or [])
     if not chunks:
-        return {"reranked": True, "reranker_used": False, "node_sequence": [NODE_RERANK]}
+        return {
+            "reranked": True,
+            "reranker_used": False,
+            "reranker_diagnostics": {"actual_provider": "rrf", "candidate_count": 0},
+            "node_sequence": [NODE_RERANK],
+        }
 
     query = state.get("current_query") or state.get("original_query", "")
     result = get_reranker().rerank_with_diagnostics(query, chunks)
+    diagnostics = result.observability_dict()
+    logger.info(
+        "Reranker completed [requested_provider=%s, actual_provider=%s, fallback=%s, "
+        "hosted_latency_ms=%.1f, reranking_latency_ms=%.1f, retries=%d]",
+        diagnostics["requested_provider"],
+        diagnostics["actual_provider"],
+        diagnostics["fallback_used"],
+        diagnostics["hosted_latency_ms"],
+        diagnostics["reranking_latency_ms"],
+        diagnostics["retry_count"],
+    )
 
     return {
         "retrieved_chunks": result.chunks,
         "reranked": True,
         "reranker_used": result.reranker_used,
+        "reranker_diagnostics": diagnostics,
         "timestamps": _stamp(state, "reranked_at"),
         "node_sequence": [NODE_RERANK],
     }
@@ -352,9 +398,7 @@ def _revision_feedback(state: GraphState) -> tuple[str, str]:
     if verification.reason:
         details.append(verification.reason)
     if verification.unsupported_claims:
-        details.append(
-            "Unsupported claims: " + "; ".join(verification.unsupported_claims[:5])
-        )
+        details.append("Unsupported claims: " + "; ".join(verification.unsupported_claims[:5]))
     if verification.missing_evidence:
         details.append("Missing exact evidence: " + ", ".join(verification.missing_evidence[:10]))
     if verification.invalid_citations:
@@ -556,19 +600,19 @@ def build_graph(verifier: Verifier | None = None) -> Any:
     verifier = verifier or get_default_verifier()
     builder: StateGraph = StateGraph(GraphState)
 
-    builder.add_node(NODE_SANITIZE, sanitize_and_classify)
-    builder.add_node(NODE_RISK, risk_router)
-    builder.add_node(NODE_AMBIGUITY, ambiguity_detector)
-    builder.add_node(NODE_RETRIEVE, hybrid_retrieve)
-    builder.add_node(NODE_RERANK, rerank)
-    builder.add_node(NODE_GRADER, evidence_grader)
-    builder.add_node(NODE_REWRITER, query_rewriter)
-    builder.add_node(NODE_GENERATE, generate_answer)
-    builder.add_node(NODE_VERIFY, make_verify_node(verifier))
-    builder.add_node(NODE_FINALIZE, finalize_answer)
-    builder.add_node(NODE_ABSTAIN, abstain)
-    builder.add_node(NODE_CLARIFY, clarify)
-    builder.add_node(NODE_ESCALATE, escalate)
+    builder.add_node(NODE_SANITIZE, _timed_node(NODE_SANITIZE, sanitize_and_classify))
+    builder.add_node(NODE_RISK, _timed_node(NODE_RISK, risk_router))
+    builder.add_node(NODE_AMBIGUITY, _timed_node(NODE_AMBIGUITY, ambiguity_detector))
+    builder.add_node(NODE_RETRIEVE, _timed_node(NODE_RETRIEVE, hybrid_retrieve))
+    builder.add_node(NODE_RERANK, _timed_node(NODE_RERANK, rerank))
+    builder.add_node(NODE_GRADER, _timed_node(NODE_GRADER, evidence_grader))
+    builder.add_node(NODE_REWRITER, _timed_node(NODE_REWRITER, query_rewriter))
+    builder.add_node(NODE_GENERATE, _timed_node(NODE_GENERATE, generate_answer))
+    builder.add_node(NODE_VERIFY, _timed_node(NODE_VERIFY, make_verify_node(verifier)))
+    builder.add_node(NODE_FINALIZE, _timed_node(NODE_FINALIZE, finalize_answer))
+    builder.add_node(NODE_ABSTAIN, _timed_node(NODE_ABSTAIN, abstain))
+    builder.add_node(NODE_CLARIFY, _timed_node(NODE_CLARIFY, clarify))
+    builder.add_node(NODE_ESCALATE, _timed_node(NODE_ESCALATE, escalate))
     builder.add_node("_count_regeneration", _count_regeneration)
 
     builder.add_edge(START, NODE_SANITIZE)
@@ -650,32 +694,42 @@ class SelfHealingGraph:
 
     def invoke(self, question: str, request_id: str | None = None) -> dict[str, Any]:
         settings = get_settings()
-        state = initial_state(
-            question,
-            request_id or str(uuid.uuid4()),
-            max_retries=settings.graph_max_retries,
-            max_regenerations=settings.graph_max_regenerations,
-            request_timeout_s=settings.graph_request_timeout_s,
-            llm_call_limit=settings.graph_llm_call_limit,
-            started_at=_now(),
-        )
-        budget = ExecutionBudget(
-            timeout_s=settings.graph_request_timeout_s,
-            max_llm_calls=settings.graph_llm_call_limit,
-        )
-        with request_budget(budget):
-            try:
-                final = dict(self.graph.invoke(state))
-            except ExecutionBudgetExceeded as exc:
-                # Defensive boundary for a future provider call added without a
-                # node-level handler. It still fails closed and returns no draft.
-                failed = {**state, **_budget_exhausted_update(state, exc.stage, exc)}
-                terminal = abstain(failed)
-                failed["node_sequence"] = list(failed.get("node_sequence") or []) + list(
-                    terminal.pop("node_sequence", [])
-                )
-                final = {**failed, **terminal}
-        final.update(budget.snapshot())
+        with route_context(settings) as route:
+            state = initial_state(
+                question,
+                request_id or str(uuid.uuid4()),
+                max_retries=settings.graph_max_retries,
+                max_regenerations=settings.graph_max_regenerations,
+                request_timeout_s=settings.graph_request_timeout_s,
+                llm_call_limit=settings.effective_graph_llm_call_limit,
+                llm_provider=route.provider,
+                llm_routing_mode=route.mode,
+                llm_route_workload=route.workload,
+                started_at=_now(),
+            )
+            budget = ExecutionBudget(
+                timeout_s=settings.graph_request_timeout_s,
+                max_llm_calls=settings.effective_graph_llm_call_limit,
+            )
+            with request_budget(budget):
+                try:
+                    final = dict(self.graph.invoke(state))
+                except ExecutionBudgetExceeded as exc:
+                    # Defensive boundary for a future provider call added without a
+                    # node-level handler. It still fails closed and returns no draft.
+                    failed = {**state, **_budget_exhausted_update(state, exc.stage, exc)}
+                    terminal = abstain(failed)
+                    failed["node_sequence"] = list(failed.get("node_sequence") or []) + list(
+                        terminal.pop("node_sequence", [])
+                    )
+                    final = {**failed, **terminal}
+            final.update(budget.snapshot())
+            final.update(
+                llm_provider=route.provider,
+                llm_routing_mode=route.mode,
+                llm_route_workload=route.workload,
+                llm_fallbacks=list(route.fallback_reasons),
+            )
         return final
 
     def run(self, question: str, request_id: str | None = None) -> dict[str, Any]:
@@ -702,11 +756,21 @@ def summarise(state: dict[str, Any]) -> dict[str, Any]:
         "verification_result": state.get("verification_result") or {},
         "retrieved_chunk_count": len(state.get("retrieved_chunks") or []),
         "reranker_used": state.get("reranker_used"),
+        "reranker_diagnostics": state.get("reranker_diagnostics") or {},
         "node_sequence": list(state.get("node_sequence") or []),
+        "stage_latency_samples_ms": sanitise_timing_samples(
+            state.get("stage_latency_samples_ms"), NODE_NAMES
+        ),
+        "retrieval_latency_samples_ms": sanitise_timing_samples(
+            state.get("retrieval_latency_samples_ms"), RETRIEVAL_STAGE_NAMES
+        ),
         "timestamps": state.get("timestamps") or {},
         "request_timeout_s": state.get("request_timeout_s"),
         "llm_call_limit": state.get("llm_call_limit"),
         "llm_calls_used": state.get("llm_calls_used", 0),
+        "llm_provider": state.get("llm_provider"),
+        "llm_routing_mode": state.get("llm_routing_mode"),
+        "llm_fallbacks": list(state.get("llm_fallbacks") or []),
         "budget_exhausted": bool(state.get("budget_exhausted")),
         "budget_exhaustion_reason": state.get("budget_exhaustion_reason", ""),
         "budget_exhaustion_stage": state.get("budget_exhaustion_stage", ""),

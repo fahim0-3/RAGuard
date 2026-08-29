@@ -19,6 +19,7 @@ from typing import Annotated, Any, Literal, TypedDict
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.retrieval.types import RetrievedChunk
+from src.timing import merge_timing_samples
 
 __all__ = [
     "AmbiguityDecision",
@@ -179,6 +180,8 @@ class GraphState(TypedDict, total=False):
     request_id: str
     timestamps: dict[str, str]
     node_sequence: Annotated[list[str], lambda old, new: (old or []) + (new or [])]
+    stage_latency_samples_ms: Annotated[dict[str, list[float]], merge_timing_samples]
+    retrieval_latency_samples_ms: Annotated[dict[str, list[float]], merge_timing_samples]
 
     # Query
     original_query: str
@@ -196,6 +199,8 @@ class GraphState(TypedDict, total=False):
     retrieved_chunks: list[RetrievedChunk]
     reranked: bool
     reranker_used: bool
+    # Safe provider metadata only; no passages, query, or credentials.
+    reranker_diagnostics: dict[str, Any]
 
     # Grading
     evidence_grade: dict[str, Any]
@@ -214,6 +219,12 @@ class GraphState(TypedDict, total=False):
     budget_exhaustion_reason: str
     budget_exhaustion_stage: str
     budget_elapsed_ms: float
+    # Deterministic per-run provider routing. Fallbacks contain only a provider
+    # name and a safe failure category, never prompts or exception text.
+    llm_provider: str
+    llm_routing_mode: str
+    llm_route_workload: str
+    llm_fallbacks: list[str]
 
     # Generation
     answer_draft: str
@@ -243,6 +254,9 @@ def initial_state(
     max_regenerations: int,
     request_timeout_s: float,
     llm_call_limit: int,
+    llm_provider: str = "",
+    llm_routing_mode: str = "static",
+    llm_route_workload: str = "normal",
     started_at: str,
 ) -> GraphState:
     """Seed every key so nodes never branch on a missing one."""
@@ -250,6 +264,8 @@ def initial_state(
         request_id=request_id,
         timestamps={"started_at": started_at},
         node_sequence=[],
+        stage_latency_samples_ms={},
+        retrieval_latency_samples_ms={},
         original_query=question,
         current_query=question,
         rewritten_queries=[],
@@ -261,6 +277,7 @@ def initial_state(
         retrieved_chunks=[],
         reranked=False,
         reranker_used=False,
+        reranker_diagnostics={},
         evidence_grade={},
         retry_count=0,
         max_retries=max_retries,
@@ -273,6 +290,10 @@ def initial_state(
         budget_exhaustion_reason="",
         budget_exhaustion_stage="",
         budget_elapsed_ms=0.0,
+        llm_provider=llm_provider,
+        llm_routing_mode=llm_routing_mode,
+        llm_route_workload=llm_route_workload,
+        llm_fallbacks=[],
         answer_draft="",
         citations=[],
         claim_citations=[],

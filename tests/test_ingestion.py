@@ -48,7 +48,9 @@ CRITICAL_IDENTIFIERS = [
 
 
 def test_extract_headings_finds_title_and_section():
-    title, section = _extract_headings("# Refund Policy (REF-001)\n\n## 1. Refund eligibility\ntext")
+    title, section = _extract_headings(
+        "# Refund Policy (REF-001)\n\n## 1. Refund eligibility\ntext"
+    )
     assert title == "Refund Policy (REF-001)"
     assert section == "1. Refund eligibility"
 
@@ -187,9 +189,7 @@ def test_whole_corpus_text_is_preserved_in_substance():
             assert stripped in joined, f"{filename} lost content: {stripped[:60]!r}"
 
 
-def test_reset_ingestion_replaces_a_source_through_one_atomic_operation(
-    tmp_path, monkeypatch
-):
+def test_reset_ingestion_replaces_a_source_through_one_atomic_operation(tmp_path, monkeypatch):
     path = tmp_path / "policy.txt"
     path.write_text("ignored by the patched splitter", encoding="utf-8")
     records = [

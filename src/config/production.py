@@ -63,12 +63,26 @@ def validate_production_settings(settings: Settings) -> PreflightReport:
                 )
             )
 
+    # Hosted reranking is an explicit data-egress boundary, separate from LLM
+    # routing. A key never authorises it by itself.
+    if settings.reranker_enabled and settings.reranker_provider == "voyage":
+        if not settings.reranker_remote_allowed:
+            errors.append(
+                PreflightIssue(
+                    "reranker_remote_not_allowed",
+                    "RERANKER_REMOTE_ALLOWED=true is required for Voyage reranking.",
+                )
+            )
+        key = settings.voyage_api_key or ""
+        if len(key) < 20 or _is_placeholder(key):
+            errors.append(
+                PreflightIssue(
+                    "voyage_api_key_missing", "A non-placeholder Voyage API key is required."
+                )
+            )
     if settings.database_admin_url.strip():
         admin_database = urlparse(settings.database_admin_url)
-        if (
-            admin_database.scheme not in {"postgres", "postgresql"}
-            or not admin_database.hostname
-        ):
+        if admin_database.scheme not in {"postgres", "postgresql"} or not admin_database.hostname:
             errors.append(
                 PreflightIssue(
                     "database_admin_url_invalid",
@@ -92,11 +106,25 @@ def validate_production_settings(settings: Settings) -> PreflightReport:
                     )
                 )
 
-    if settings.llm_provider == "gemini":
+    # Dynamic routing still chooses deterministically at request entry. Validate
+    # that initial choice here; a later fallback remains bounded and will fail
+    # closed if its endpoint is unavailable.
+    from src.generation.llm_routing import select_route
+
+    selected_provider = select_route(settings).provider
+    if selected_provider == "gemini":
         key = settings.google_api_key or ""
         if len(key) < 20 or _is_placeholder(key):
             errors.append(
-                PreflightIssue("google_api_key_missing", "A non-placeholder provider key is required.")
+                PreflightIssue(
+                    "google_api_key_missing", "A non-placeholder provider key is required."
+                )
+            )
+    elif selected_provider == "groq":
+        key = settings.groq_api_key or ""
+        if len(key) < 20 or _is_placeholder(key):
+            errors.append(
+                PreflightIssue("groq_api_key_missing", "A non-placeholder provider key is required.")
             )
     else:
         ollama_url = urlparse(settings.ollama_base_url)
@@ -226,9 +254,7 @@ def enforce_production_runtime_storage(settings: Settings) -> None:
 
     cache_dir = Path(settings.model_cache_dir) if settings.model_cache_dir else None
     if cache_dir is None or not cache_dir.is_dir():
-        raise ProductionConfigurationError(
-            "production runtime check failed: model_cache_missing"
-        )
+        raise ProductionConfigurationError("production runtime check failed: model_cache_missing")
     if not os.access(cache_dir, os.W_OK):
         raise ProductionConfigurationError(
             "production runtime check failed: model_cache_not_writable"

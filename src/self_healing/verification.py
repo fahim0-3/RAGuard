@@ -21,10 +21,12 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
 from src.config import get_settings
 from src.generation.answer_chain import validate_citations
+from src.generation.schemas import ClaimCitation
 from src.retrieval.types import RetrievedChunk
 from src.self_healing.citation_verifier import verify_citations
 from src.self_healing.claims import Claim, extract_claims
@@ -32,6 +34,8 @@ from src.self_healing.entailment import judge_claim
 from src.self_healing.state import VerificationResult
 
 logger = logging.getLogger(__name__)
+
+ClaimCitationInput = ClaimCitation | Mapping[str, Any]
 
 __all__ = [
     "DeterministicVerifier",
@@ -52,7 +56,7 @@ class Verifier(Protocol):
         answer: str,
         citations: list[str],
         chunks: list[RetrievedChunk],
-        claim_citations: list[dict[str, Any]] | None = None,
+        claim_citations: list[ClaimCitationInput] | None = None,
     ) -> VerificationResult:
         """Decide whether `answer` is supported by the cited `chunks`."""
         ...
@@ -78,7 +82,7 @@ class DeterministicVerifier:
         answer: str,
         citations: list[str],
         chunks: list[RetrievedChunk],
-        claim_citations: list[dict[str, Any]] | None = None,
+        claim_citations: list[ClaimCitationInput] | None = None,
     ) -> VerificationResult:
         if not answer.strip():
             return VerificationResult(
@@ -166,9 +170,7 @@ class EntailmentVerifier:
 
         if token.endswith("PERCENT") or token.endswith("%"):
             number = token.removesuffix("%").removesuffix("PERCENT")
-            return bool(
-                re.search(rf"(?<![\d.]){re.escape(number)}\s*(?:%|PERCENT)", passage_upper)
-            )
+            return bool(re.search(rf"(?<![\d.]){re.escape(number)}\s*(?:%|PERCENT)", passage_upper))
 
         if token[:1] in {"£", "$", "€"}:
             number = token[1:]
@@ -177,9 +179,7 @@ class EntailmentVerifier:
         # Digits and identifiers. The lookahead rejects a match sitting inside a
         # longer number ("3" in "30") or a decimal ("3" in "3.5"), while still
         # allowing an identifier to end a sentence ("rule RT-014.").
-        return bool(
-            re.search(rf"(?<![\w.]){re.escape(token)}(?!\w)(?!\.\d)", passage_upper)
-        )
+        return bool(re.search(rf"(?<![\w.]){re.escape(token)}(?!\w)(?!\.\d)", passage_upper))
 
     def _missing_required(self, claim: Claim, passages: str) -> list[str]:
         """Required figures and identifiers absent from the cited evidence."""
@@ -199,7 +199,7 @@ class EntailmentVerifier:
         answer: str,
         citations: list[str],
         chunks: list[RetrievedChunk],
-        claim_citations: list[dict[str, Any]] | None = None,
+        claim_citations: list[ClaimCitationInput] | None = None,
     ) -> VerificationResult:
         started = time.perf_counter()
 
@@ -259,8 +259,12 @@ class EntailmentVerifier:
                 uncited += 1
                 unsupported.append(claim.claim_text)
                 verdicts.append(
-                    {**claim.to_dict(), "supported": False, "method": "no-citation",
-                     "reason": "claim carries no usable citation"}
+                    {
+                        **claim.to_dict(),
+                        "supported": False,
+                        "method": "no-citation",
+                        "reason": "claim carries no usable citation",
+                    }
                 )
                 continue
 
@@ -270,8 +274,12 @@ class EntailmentVerifier:
                 missing_evidence.extend(missing)
                 unsupported.append(claim.claim_text)
                 verdicts.append(
-                    {**claim.to_dict(), "supported": False, "method": "exact-token",
-                     "reason": f"not in cited evidence: {missing}"}
+                    {
+                        **claim.to_dict(),
+                        "supported": False,
+                        "method": "exact-token",
+                        "reason": f"not in cited evidence: {missing}",
+                    }
                 )
                 continue
 
@@ -304,8 +312,7 @@ class EntailmentVerifier:
 
             confidences.append(confidence)
             verdicts.append(
-                {**claim.to_dict(), "supported": supported, "method": method,
-                 "reason": reason}
+                {**claim.to_dict(), "supported": supported, "method": method, "reason": reason}
             )
 
         supported_count = sum(1 for v in verdicts if v["supported"])

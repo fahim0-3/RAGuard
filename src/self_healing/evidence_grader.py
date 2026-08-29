@@ -144,11 +144,7 @@ def _policy_overview_target(query: str) -> tuple[str, str] | None:
 
 def deterministic_signals(query: str, chunks: list[RetrievedChunk]) -> dict[str, Any]:
     """Measurements only. No thresholds are applied here."""
-    scores = [
-        c.normalised_rerank_score
-        for c in chunks
-        if c.normalised_rerank_score is not None
-    ]
+    scores = [c.normalised_rerank_score for c in chunks if c.normalised_rerank_score is not None]
     top_score = scores[0] if scores else 0.0
     second_score = scores[1] if len(scores) > 1 else 0.0
 
@@ -172,8 +168,7 @@ def deterministic_signals(query: str, chunks: list[RetrievedChunk]) -> dict[str,
         pid
         for pid in requested_ids
         # Word-boundary matched, so "REF-001" is not satisfied by "REF-0012".
-        if pid in retrieved_ids
-        or re.search(rf"(?<![\w-]){re.escape(pid)}(?![\w-])", evidence_text)
+        if pid in retrieved_ids or re.search(rf"(?<![\w-]){re.escape(pid)}(?![\w-])", evidence_text)
     ]
     matched_as_document = [pid for pid in matched_ids if pid in retrieved_ids]
 
@@ -228,8 +223,7 @@ def _deterministic_verdict(signals: dict[str, Any]) -> tuple[bool, str]:
 
     if signals["policy_id_requested_but_missing"]:
         return False, (
-            f"question names {signals['requested_policy_ids']} "
-            f"but no passage comes from it"
+            f"question names {signals['requested_policy_ids']} but no passage comes from it"
         )
 
     if signals["chunk_count"] < settings.evidence_min_relevant_chunks:
@@ -247,13 +241,11 @@ def _deterministic_verdict(signals: dict[str, Any]) -> tuple[bool, str]:
     return True, f"top score {signals['top_score']:.2f} over threshold"
 
 
-def _build_grader_chain(
-    *, timeout_s: float | None = None, max_retries: int | None = None
-) -> Any:
-    from langchain_core.output_parsers import JsonOutputParser
+def _build_grader_chain(*, timeout_s: float | None = None, max_retries: int | None = None) -> Any:
     from langchain_core.prompts import ChatPromptTemplate
 
-    from src.generation.llm_factory import get_chat_model
+    from src.generation.llm_factory import build_json_chain
+    from src.generation.structured_schemas import EVIDENCE_GRADE_SCHEMA
 
     prompt = ChatPromptTemplate.from_messages(
         [
@@ -261,10 +253,12 @@ def _build_grader_chain(
             ("human", EVIDENCE_GRADER_HUMAN_PROMPT),
         ]
     ).partial(output_schema=EVIDENCE_GRADER_OUTPUT_SCHEMA)
-    return (
-        prompt
-        | get_chat_model("judge", timeout_s=timeout_s, max_retries=max_retries)
-        | JsonOutputParser()
+    return build_json_chain(
+        prompt,
+        "judge",
+        EVIDENCE_GRADE_SCHEMA,
+        timeout_s=timeout_s,
+        max_retries=max_retries,
     )
 
 
@@ -272,8 +266,7 @@ def _format_passages(chunks: list[RetrievedChunk]) -> str:
     if not chunks:
         return "(no passages retrieved)"
     return "\n\n".join(
-        f"[{i}] {c.citation_label}\n{c.content[:900]}"
-        for i, c in enumerate(chunks, start=1)
+        f"[{i}] {c.citation_label}\n{c.content[:900]}" for i, c in enumerate(chunks, start=1)
     )
 
 
@@ -323,9 +316,7 @@ def grade_evidence(
             chain = (
                 _build_grader_chain()
                 if llm_timeout_s is None and llm_max_retries is None
-                else _build_grader_chain(
-                    timeout_s=llm_timeout_s, max_retries=llm_max_retries
-                )
+                else _build_grader_chain(timeout_s=llm_timeout_s, max_retries=llm_max_retries)
             )
         raw = chain.invoke({"question": query, "context": _format_passages(chunks)})
     except Exception as exc:  # noqa: BLE001 - grading must never break the graph
@@ -363,8 +354,11 @@ def grade_evidence(
     if sufficient:
         graded.missing_information = []
     elif not graded.missing_information:
-        graded.missing_information = [deterministic_reason if not deterministic_ok else
-                                      "grader judged the passages incomplete"]
+        graded.missing_information = [
+            deterministic_reason
+            if not deterministic_ok
+            else "grader judged the passages incomplete"
+        ]
 
     graded.sufficient = sufficient
     graded.relevant = bool(graded.relevant or signals["policy_id_exact_match"])

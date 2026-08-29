@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
 from collections.abc import Mapping
 
@@ -13,6 +14,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 from src.config import Settings
+from src.timing import GRAPH_STAGE_NAMES, RETRIEVAL_STAGE_NAMES
 
 logger = logging.getLogger(__name__)
 _lock = threading.Lock()
@@ -66,7 +68,12 @@ def inject_trace_context() -> dict[str, str]:
 
 
 def annotate_query_span(
-    *, request_id: str, outcome: str | None = None, failure_reason: str | None = None
+    *,
+    request_id: str,
+    outcome: str | None = None,
+    failure_reason: str | None = None,
+    stage_latency_ms: Mapping[str, Mapping[str, object]] | None = None,
+    retrieval_latency_ms: Mapping[str, Mapping[str, object]] | None = None,
 ) -> None:
     """Attach bounded query lifecycle fields to the current span."""
     span = trace.get_current_span()
@@ -77,3 +84,24 @@ def annotate_query_span(
         span.set_attribute("raguard.outcome", outcome)
     if failure_reason is not None:
         span.set_attribute("raguard.failure_reason", failure_reason)
+    _annotate_timings(span, "raguard.stage", stage_latency_ms, frozenset(GRAPH_STAGE_NAMES))
+    _annotate_timings(
+        span,
+        "raguard.retrieval",
+        retrieval_latency_ms,
+        frozenset(RETRIEVAL_STAGE_NAMES),
+    )
+
+
+def _annotate_timings(span, prefix, values, allowed_names) -> None:
+    for name, stats in (values or {}).items():
+        if name not in allowed_names:
+            continue
+        for field in ("count", "total_ms", "max_ms"):
+            value = stats.get(field)
+            if (
+                isinstance(value, int | float)
+                and not isinstance(value, bool)
+                and math.isfinite(float(value))
+            ):
+                span.set_attribute(f"{prefix}.{name}.{field}", value)

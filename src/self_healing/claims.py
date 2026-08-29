@@ -24,19 +24,25 @@ passages were cited for it, nothing about how any decision was reached.
 from __future__ import annotations
 
 import re
-from typing import Any, Literal
+from collections.abc import Mapping
+from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.generation.schemas import ClaimCitation
+
 __all__ = [
     "Claim",
+    "ClaimCitationInput",
     "ClaimType",
+    "claim_citation_values",
     "extract_claims",
     "numeric_tokens",
     "policy_ids",
 ]
 
 ClaimType = Literal["factual", "numeric", "policy", "procedural", "temporal"]
+ClaimCitationInput: TypeAlias = ClaimCitation | Mapping[str, Any]
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
@@ -140,10 +146,26 @@ def _required_tokens(sentence: str, claim_type: ClaimType) -> list[str]:
     return []
 
 
+def claim_citation_values(mapping: ClaimCitationInput) -> tuple[str, list[str]] | None:
+    """Read a typed citation or the legacy graph-state mapping.
+
+    ``ClaimCitation`` is the normal post-validation representation. Mappings
+    remain supported because graph state is serialisable and old callers pass
+    dictionaries. Unknown objects are rejected so verification fails closed.
+    """
+    if isinstance(mapping, ClaimCitation):
+        return mapping.claim, list(mapping.citations)
+    if isinstance(mapping, Mapping):
+        claim = mapping.get("claim", "")
+        citations = mapping.get("citations", [])
+        return str(claim or ""), citations if isinstance(citations, list) else []
+    return None
+
+
 def extract_claims(
     answer: str,
     citation_labels: list[str] | None = None,
-    claim_citations: list[dict[str, Any]] | None = None,
+    claim_citations: list[ClaimCitationInput] | None = None,
 ) -> list[Claim]:
     """Split an answer into typed, citation-bearing claims.
 
@@ -166,11 +188,12 @@ def extract_claims(
         mapped_labels = labels
         if mappings:
             mapping = mappings[index - 1] if index - 1 < len(mappings) else {}
-            if " ".join(str(mapping.get("claim", "")).split()) != sentence:
+            values = claim_citation_values(mapping)
+            if values is None or " ".join(values[0].split()) != sentence:
                 # A malformed map fails closed as an uncited claim.
                 mapped_labels = []
             else:
-                raw_labels = mapping.get("citations", [])
+                raw_labels = values[1]
                 mapped_labels = [label for label in raw_labels if isinstance(label, str)]
         claim_type = classify(sentence)
         claims.append(

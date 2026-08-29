@@ -133,9 +133,7 @@ def ingest_corpus(data_dir: Path | None = None, reset: bool = True) -> dict[str,
 
     init_schema()
 
-    files = sorted(
-        [p for p in directory.iterdir() if p.suffix.lower() in {".txt", ".md"}]
-    )
+    files = sorted([p for p in directory.iterdir() if p.suffix.lower() in {".txt", ".md"}])
     if not files:
         raise FileNotFoundError(f"No .txt or .md documents in {directory}")
 

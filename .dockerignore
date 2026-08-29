@@ -11,8 +11,11 @@ env/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest-work/
 .ruff_cache/
 .mypy_cache/
+.uv-cache/
+.uv-python/
 .coverage
 htmlcov/
 build/
@@ -21,7 +24,10 @@ dist/
 .eggs/
 .vscode/
 .idea/
+.claude/
 Thumbs.db
 .DS_Store
 clcs
 diff_review.txt
+*.before-cuda
+reports/

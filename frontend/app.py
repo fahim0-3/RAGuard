@@ -38,11 +38,95 @@ st.set_page_config(page_title="RAGuard", page_icon="🛡️", layout="wide")
 st.markdown(
     """
     <style>
-      .stApp { background: #f7f8f6; }
+      .stApp { background: #f7f8f6; color: #1b2927; }
+      .stApp p, .stApp li, .stApp label,
+      .stApp [data-testid="stMarkdownContainer"],
+      .stApp [data-testid="stMarkdownContainer"] p,
+      .stApp [data-testid="stCaptionContainer"] { color: #1b2927; }
       [data-testid="stSidebar"] { background: #173a3a; }
       [data-testid="stSidebar"] * { color: #f4f7f4; }
-      [data-testid="stSidebar"] [data-baseweb="input"] * { color: #1d2524; }
-      h1, h2, h3 { color: #1b2927; }
+      [data-testid="stSidebar"] h1,
+      [data-testid="stSidebar"] h2,
+      [data-testid="stSidebar"] h3,
+      [data-testid="stSidebar"] label,
+      [data-testid="stSidebar"] [data-testid="stTextInput"] label,
+      [data-testid="stSidebar"] summary,
+      [data-testid="stSidebar"] [data-testid="stCaptionContainer"],
+      [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {
+        color: #f4f7f4 !important;
+      }
+      [data-testid="stSidebar"] [data-baseweb="input"],
+      [data-testid="stSidebar"] [data-baseweb="select"] > div,
+      [data-testid="stSidebar"] textarea {
+        background: #224b4b;
+        border-color: #5b8580;
+      }
+      [data-testid="stSidebar"] [data-baseweb="input"] input,
+      [data-testid="stSidebar"] [data-baseweb="input"] textarea,
+      [data-testid="stSidebar"] [data-baseweb="select"] *,
+      [data-testid="stSidebar"] textarea,
+      [data-testid="stSidebar"] .stButton > button {
+        color: #f4f7f4 !important;
+      }
+      [data-testid="stSidebar"] input::placeholder,
+      [data-testid="stSidebar"] textarea::placeholder { color: #b9d4cf !important; opacity: 1; }
+      [data-testid="stSidebar"] .stButton > button {
+        background: #224b4b;
+        border-color: #5b8580;
+      }
+      [data-testid="stSidebar"] .stButton > button:hover {
+        background: #2c5d5c;
+        border-color: #82aaa4;
+      }
+      .stApp h1, .stApp h2, .stApp h3 { color: #1b2927; }
+      .stApp [data-testid="stAlert"] p,
+      .stApp [data-testid="stAlert"] div { color: #1b2927; }
+      .stApp [data-testid="stMetricLabel"],
+      .stApp [data-testid="stMetricLabel"] *,
+      .stApp [data-testid="stMetricValue"],
+      .stApp [data-testid="stMetricValue"] * { color: #1b2927; }
+      .stApp button[data-baseweb="tab"] { color: #1b2927; }
+      .stApp button[data-baseweb="tab"][aria-selected="true"] { color: #0f635a; }
+      .stApp [data-testid="stExpander"] summary,
+      .stApp [data-testid="stExpander"] p,
+      .stApp code, .stApp pre { color: #1b2927; }
+      .stApp [data-testid="stSelectbox"] [data-baseweb="select"] > div,
+      .stApp [data-testid="stTextArea"] [data-baseweb="input"] {
+        background: #224b4b;
+        border-color: #5b8580;
+      }
+      .stApp [data-testid="stSelectbox"] [data-baseweb="select"] *,
+      .stApp [data-testid="stTextArea"] textarea {
+        color: #f4f7f4 !important;
+      }
+      .stApp [data-testid="stTextArea"] textarea::placeholder {
+        color: #b9d4cf !important;
+        opacity: 1;
+      }
+      .stApp [data-testid="stTextArea"] [data-baseweb="input"]:focus-within {
+        border-color: #82aaa4 !important;
+        box-shadow: 0 0 0 1px #82aaa4;
+      }
+      .stApp [data-testid="stTextArea"] [data-baseweb="input"]:has(textarea:invalid),
+      .stApp [data-testid="stTextArea"] [data-baseweb="input"]:has(textarea[aria-invalid="true"]) {
+        border-color: #c95a5a !important;
+        box-shadow: 0 0 0 1px #c95a5a;
+      }
+      .stApp [data-testid="stButton"] > button:not([kind="primary"]) {
+        background: #224b4b;
+        border-color: #5b8580;
+        color: #f4f7f4 !important;
+      }
+      .stApp [data-testid="stButton"] > button:not([kind="primary"]):hover {
+        background: #2c5d5c;
+        border-color: #82aaa4;
+      }
+      [data-testid="stSidebar"] [data-testid="stAlert"] p,
+      [data-testid="stSidebar"] [data-testid="stAlert"] div,
+      [data-testid="stSidebar"] [data-testid="stExpander"] summary,
+      [data-testid="stSidebar"] [data-testid="stExpander"] p,
+      [data-testid="stSidebar"] code,
+      [data-testid="stSidebar"] pre { color: #f4f7f4 !important; }
       [data-testid="stMetric"] {
         background: #ffffff;
         border: 1px solid #dbe3df;
@@ -91,6 +175,7 @@ MAX_QUESTION_CHARS = 2000
 #: user typed.
 QUESTION_KEY = "question_text"
 EXAMPLE_KEY = "example_choice"
+APPLIED_EXAMPLE_KEY = "applied_example_choice"
 RECENT_KEY = "recent_questions"
 NO_EXAMPLE = "(type your own)"
 MAX_RECENT_QUESTIONS = 5
@@ -205,7 +290,9 @@ with st.sidebar:
 # Main panel
 # --------------------------------------------------------------------------
 
-st.markdown('<div class="raguard-kicker">Customer support policy desk</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="raguard-kicker">Customer support policy desk</div>', unsafe_allow_html=True
+)
 st.title("RAGuard")
 st.markdown(
     '<div class="raguard-subtitle">Ask a policy question, review the cited evidence, and see the verified outcome.</div>',
@@ -216,6 +303,7 @@ st.markdown(
 # with no `value=`. Passing `value=` recomputed from the example selector is
 # what previously discarded typed text whenever the selector changed.
 st.session_state.setdefault(QUESTION_KEY, "")
+st.session_state.setdefault(APPLIED_EXAMPLE_KEY, NO_EXAMPLE)
 st.session_state.setdefault(RECENT_KEY, [])
 
 
@@ -223,15 +311,17 @@ def _clear_view() -> None:
     st.session_state.pop("view", None)
 
 
-def _apply_example() -> None:
-    """Copy the chosen example into the editable question field.
+def _sync_selected_example(choice: str) -> None:
+    """Apply a newly selected example before the Question widget is created.
 
-    Runs only on an actual change of the selector, so it cannot overwrite text
-    the user is typing. Choosing "(type your own)" clears the field, which is
-    the only way to get an empty box back once an example has been used.
+    The marker distinguishes selecting an example from a later rerun caused by
+    editing the textarea.  That makes the selector deterministic without
+    overwriting a user's edit or mutating the textarea widget after creation.
     """
-    choice = st.session_state.get(EXAMPLE_KEY, NO_EXAMPLE)
+    if choice == st.session_state.get(APPLIED_EXAMPLE_KEY, NO_EXAMPLE):
+        return
     st.session_state[QUESTION_KEY] = "" if choice == NO_EXAMPLE else choice
+    st.session_state[APPLIED_EXAMPLE_KEY] = choice
     _clear_view()
 
 
@@ -259,13 +349,13 @@ composer, session_panel = st.columns([3, 2], gap="large")
 
 with composer:
     st.subheader("Ask a policy question")
-    st.selectbox(
+    selected_example = st.selectbox(
         "Example questions",
         [NO_EXAMPLE, *EXAMPLES],
         key=EXAMPLE_KEY,
-        on_change=_apply_example,
         help="Optional starting points. The question below stays fully editable.",
     )
+    _sync_selected_example(selected_example)
     st.text_area(
         "Question",
         key=QUESTION_KEY,
@@ -291,8 +381,7 @@ with composer:
                 {
                     "error": "invalid_question",
                     "detail": (
-                        f"Please enter a question of at least {MIN_QUESTION_CHARS} "
-                        "characters."
+                        f"Please enter a question of at least {MIN_QUESTION_CHARS} characters."
                     ),
                 }
             )

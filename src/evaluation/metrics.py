@@ -141,9 +141,7 @@ class EvaluationReport:
 # --------------------------------------------------------------------------
 
 
-def evaluate_retrieval(
-    cases: list[dict[str, Any]] | None = None, k: int = 5
-) -> EvaluationReport:
+def evaluate_retrieval(cases: list[dict[str, Any]] | None = None, k: int = 5) -> EvaluationReport:
     from src.self_healing.pipeline import get_pipeline
 
     cases = cases if cases is not None else load_golden_dataset()
@@ -237,9 +235,7 @@ def evaluate_end_to_end(
     healing_used: list[float] = []
 
     for case in cases:
-        response = pipeline.answer(
-            case["question"], use_llm_verification=use_llm_verification
-        )
+        response = pipeline.answer(case["question"], use_llm_verification=use_llm_verification)
         should_abstain = bool(case.get("should_abstain"))
 
         abstention_correct.append(1.0 if response.abstained == should_abstain else 0.0)
@@ -263,9 +259,7 @@ def evaluate_end_to_end(
                 cited_sources = {c["source"] for c in response.citations}
                 valid = 1.0 if cited_sources & set(case["expected_sources"]) else 0.0
                 citation_validity.append(valid)
-                answer_kw.append(
-                    keyword_recall(response.answer, case.get("expected_keywords", []))
-                )
+                answer_kw.append(keyword_recall(response.answer, case.get("expected_keywords", [])))
                 record["cited_sources"] = sorted(cited_sources)
                 record["citation_matches_expected"] = bool(valid)
 
@@ -327,11 +321,11 @@ def run_ragas(cases: list[dict[str, Any]] | None = None) -> EvaluationReport:
         )
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
-            "Ragas is not installed or its API has moved. Run: "
-            "uv sync --locked --group evaluation"
+            "Ragas is not installed or its API has moved. Run: uv sync --locked --group evaluation"
         ) from exc
 
     from src.generation.llm_provider import get_chat_model
+    from src.generation.llm_routing import workload_context
     from src.self_healing.pipeline import get_pipeline
 
     cases = cases if cases is not None else load_golden_dataset()
@@ -352,7 +346,8 @@ def run_ragas(cases: list[dict[str, Any]] | None = None) -> EvaluationReport:
             }
         )
 
-    judge = LangchainLLMWrapper(get_chat_model("judge"))
+    with workload_context("evaluation"):
+        judge = LangchainLLMWrapper(get_chat_model("judge"))
     embeddings = LangchainEmbeddingsWrapper(_BGEEmbeddingsAdapter())
 
     result = evaluate(

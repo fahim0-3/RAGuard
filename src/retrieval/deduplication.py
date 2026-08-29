@@ -176,9 +176,7 @@ def deduplicate(
         result.kept.append(candidate)
 
     if result.dropped:
-        logger.debug(
-            "Deduplication removed %d of %d candidates", result.dropped_count, len(chunks)
-        )
+        logger.debug("Deduplication removed %d of %d candidates", result.dropped_count, len(chunks))
     return result
 
 

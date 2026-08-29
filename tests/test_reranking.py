@@ -65,6 +65,64 @@ def test_explicit_reranker_device_overrides_the_shared_model_device():
     assert reranker.device == "cuda:0"
 
 
+def test_explicit_batch_size_overrides_the_device_default():
+    model = FakeModel([1.0])
+    reranker = make_reranker(model, batch_size=7)
+
+    reranker.rerank_with_diagnostics("q", [make_chunk(1)], top_k=1)
+
+    assert reranker.batch_size == 7
+    assert model.calls == [[("q", "text")]]
+
+
+def test_automatic_cuda_load_falls_back_to_cpu_without_switching_models(monkeypatch):
+    """A driver/OOM failure must preserve the primary model before RRF fallback."""
+    from src.reranking import cross_encoder
+
+    class SettingsStub:
+        reranker_model = "primary"
+        reranker_fallback_model = "fallback"
+        reranker_device = "auto"
+        resolved_reranker_device = "cuda"
+        resolved_reranker_model = "primary"
+        reranker_enabled = True
+        reranker_batch_size = 0
+        reranker_max_length = 512
+        reranker_max_concurrency = 1
+        reranker_cpu_threads = 0
+        reranker_warmup_inference = True
+        rerank_top_k = 5
+        rerank_candidate_top_k = 20
+
+    attempted: list[tuple[str, str]] = []
+
+    class CudaThenCpu(CrossEncoderReranker):
+        def _load(self, model_name):
+            attempted.append((model_name, self.device))
+            if self.device == "cuda":
+                raise RuntimeError("CUDA out of memory")
+            return FakeModel([2.0])
+
+    monkeypatch.setattr(cross_encoder, "get_settings", lambda: SettingsStub())
+    reranker = CudaThenCpu()
+    result = reranker.rerank_with_diagnostics("q", [make_chunk(1)], top_k=1)
+
+    assert attempted == [("primary", "cuda"), ("primary", "cpu")]
+    assert reranker.device == "cpu"
+    assert reranker.batch_size == 32
+    assert result.reranker_used is True
+    assert result.model_name == "primary"
+    assert result.fallback_model_used is False
+
+
+def test_warmup_runs_a_synthetic_pair_before_the_first_query():
+    model = FakeModel([1.0])
+    reranker = make_reranker(model)
+
+    assert reranker.warmup() is True
+    assert model.calls == [[("warmup", "warmup")]]
+
+
 # --------------------------------------------------------------------------
 # Scoring
 # --------------------------------------------------------------------------
@@ -96,6 +154,21 @@ def test_normalised_score_is_sigmoid_of_raw_score():
 
     assert chunk.rerank_score == pytest.approx(2.0)
     assert chunk.normalised_rerank_score == pytest.approx(sigmoid(2.0))
+
+
+def test_fixed_order_scoring_uses_one_batch_without_reordering():
+    model = FakeModel([-4.0, 8.0, 1.0])
+    reranker = make_reranker(model)
+    chunks = [make_chunk(3), make_chunk(1), make_chunk(2)]
+
+    result = reranker.score_fixed_order_with_diagnostics("q", chunks)
+
+    assert result.reranker_used is True
+    assert [chunk.chunk_id for chunk in result.chunks] == [3, 1, 2]
+    assert [chunk.rerank_score for chunk in result.chunks] == [-4.0, 8.0, 1.0]
+    assert model.calls == [[("q", "text"), ("q", "text"), ("q", "text")]]
+    assert result.bge_scoring_latency_ms >= 0
+    assert result.bge_scoring_cpu_time_ms >= 0
 
 
 def test_model_receives_query_and_chunk_content_pairs():
@@ -165,9 +238,7 @@ def test_candidate_pool_is_capped_before_scoring():
     chunks = [make_chunk(i) for i in range(1, 31)]
     model = FakeModel([float(i) for i in range(30)])
 
-    result = make_reranker(model).rerank_with_diagnostics(
-        "q", chunks, top_k=5, candidate_top_k=20
-    )
+    result = make_reranker(model).rerank_with_diagnostics("q", chunks, top_k=5, candidate_top_k=20)
 
     assert len(model.calls[0]) == 20
     assert result.candidate_count == 20
@@ -244,8 +315,14 @@ def test_to_dict_exposes_every_stage_score():
 
     payload = reranker.rerank_with_diagnostics("q", [chunk], top_k=1).chunks[0].to_dict()
 
-    for key in ("sparse_score", "dense_score", "fusion_score", "rerank_score",
-                "normalised_rerank_score", "retriever_ranks"):
+    for key in (
+        "sparse_score",
+        "dense_score",
+        "fusion_score",
+        "rerank_score",
+        "normalised_rerank_score",
+        "retriever_ranks",
+    ):
         assert key in payload
 
 
@@ -346,9 +423,7 @@ def test_score_count_mismatch_is_treated_as_failure():
 def test_disabled_reranker_returns_rrf_order():
     chunks = [make_chunk(i) for i in range(1, 10)]
 
-    result = make_reranker(FakeModel(), enabled=False).rerank_with_diagnostics(
-        "q", chunks, top_k=5
-    )
+    result = make_reranker(FakeModel(), enabled=False).rerank_with_diagnostics("q", chunks, top_k=5)
 
     assert result.reranker_used is False
     assert result.failure_stage == "disabled"
@@ -397,6 +472,17 @@ def test_result_to_dict_records_failure_state():
     assert payload["reranker_used"] is False
     assert payload["failure_stage"] == "load"
     assert payload["candidate_count"] == 1
+
+
+def test_result_exposes_queue_and_inference_latency_without_query_content():
+    result = make_reranker(FakeModel([1.0])).rerank_with_diagnostics("sensitive query", [make_chunk(1)])
+    payload = result.to_dict()
+
+    assert payload["queue_wait_ms"] >= 0
+    assert payload["inference_latency_ms"] >= 0
+    assert "sensitive query" not in str(
+        {key: value for key, value in payload.items() if key != "query"}
+    )
 
 
 # --------------------------------------------------------------------------
@@ -511,9 +597,7 @@ def test_verdict_refuses_improvement_when_a_case_regresses():
     verdict = _verdict({"GC-001": 1, "GC-002": 4}, {"GC-001": 3, "GC-002": 1})
 
     assert verdict["no_regressions"] is False
-    assert verdict["regressed_cases"] == [
-        {"case_id": "GC-001", "before_rank": 1, "after_rank": 3}
-    ]
+    assert verdict["regressed_cases"] == [{"case_id": "GC-001", "before_rank": 1, "after_rank": 3}]
     assert verdict["reranking_is_an_improvement"] is False
 
 
@@ -550,11 +634,17 @@ def test_real_cross_encoder_prefers_the_relevant_passage():
     """Loads real weights. Excluded from the fast tier."""
     reranker = CrossEncoderReranker()
     chunks = [
-        make_chunk(1, "Carriers make two delivery attempts before returning the parcel.",
-                   source="delivery_policy.txt"),
-        make_chunk(2, "Customers are never asked to pay return shipping for a validated "
-                      "damage claim reported within 48 hours.",
-                   source="damaged_product_policy.txt"),
+        make_chunk(
+            1,
+            "Carriers make two delivery attempts before returning the parcel.",
+            source="delivery_policy.txt",
+        ),
+        make_chunk(
+            2,
+            "Customers are never asked to pay return shipping for a validated "
+            "damage claim reported within 48 hours.",
+            source="damaged_product_policy.txt",
+        ),
     ]
 
     result = reranker.rerank_with_diagnostics(

@@ -28,6 +28,14 @@ from typing import Any
 from src.config import PROJECT_ROOT, get_settings
 from src.evaluation.deterministic_metrics import latency_stats
 from src.evaluation.metrics import golden_dataset_version, load_golden_dataset
+from src.generation.llm_factory import model_name_for
+from src.generation.llm_routing import select_route, workload_context
+from src.timing import (
+    GRAPH_STAGE_NAMES,
+    RETRIEVAL_STAGE_NAMES,
+    aggregate_timing_samples,
+    sanitise_timing_samples,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +72,8 @@ class GenerationCaseResult:
     latency_ms: float = 0.0
     failure_reason: str | None = None
     infrastructure_failure: bool = False
+    stage_latency_samples_ms: dict[str, list[float]] = field(default_factory=dict)
+    retrieval_latency_samples_ms: dict[str, list[float]] = field(default_factory=dict)
     #: Carried through for the RAGAS adapter, which needs the reference answer
     #: and the passages the model actually saw. Without these the adapter has
     #: to exclude every case, and RAGAS silently evaluates nothing.
@@ -90,6 +100,8 @@ class GenerationCaseResult:
             "latency_ms": round(self.latency_ms, 1),
             "failure_reason": self.failure_reason,
             "infrastructure_failure": self.infrastructure_failure,
+            "stage_latency_ms": aggregate_timing_samples(self.stage_latency_samples_ms),
+            "retrieval_latency_ms": aggregate_timing_samples(self.retrieval_latency_samples_ms),
             "answer_preview": self.answer[:200],
             # Keys the RAGAS adapter reads. Added alongside the originals
             # rather than renaming them, so existing consumers keep working.
@@ -102,10 +114,14 @@ class GenerationCaseResult:
 
 def _expected_outcome(case: dict[str, Any]) -> str:
     """The golden dataset's expectation, tolerating the older field name."""
-    return str(case.get("expected_outcome") or ("abstain" if case.get("should_abstain") else "answer"))
+    return str(
+        case.get("expected_outcome") or ("abstain" if case.get("should_abstain") else "answer")
+    )
 
 
-def evaluate_case(case: dict[str, Any], service: Any, known_policy_ids: set[str]) -> GenerationCaseResult:
+def evaluate_case(
+    case: dict[str, Any], service: Any, known_policy_ids: set[str]
+) -> GenerationCaseResult:
     started = time.perf_counter()
     expected = _expected_outcome(case)
     request_id = f"eval-{case.get('id', uuid.uuid4().hex[:8])}"
@@ -122,7 +138,9 @@ def evaluate_case(case: dict[str, Any], service: Any, known_policy_ids: set[str]
             outcome_matched=False,
             priority=str(case.get("priority", "")),
             case_type=str(case.get("case_type", "")),
-            failure_reason=f"{type(exc).__name__}: {exc}",
+            # Reports become CI artifacts. The full exception stays in the
+            # log, while the report keeps only a stable diagnostic category.
+            failure_reason=f"evaluation_exception:{type(exc).__name__}",
             infrastructure_failure=True,
             latency_ms=(time.perf_counter() - started) * 1000.0,
         )
@@ -159,8 +177,10 @@ def evaluate_case(case: dict[str, Any], service: Any, known_policy_ids: set[str]
         cited_policy_ids=cited_policy_ids,
         invalid_citation_ids=invalid,
         verification_status=(
-            "supported" if verification.get("supported")
-            else "unsupported" if verification.get("checked")
+            "supported"
+            if verification.get("supported")
+            else "unsupported"
+            if verification.get("checked")
             else "not_checked"
         ),
         # Phase E guarantees a validated envelope; a missing outcome means the
@@ -171,6 +191,12 @@ def evaluate_case(case: dict[str, Any], service: Any, known_policy_ids: set[str]
         latency_ms=(time.perf_counter() - started) * 1000.0,
         failure_reason=summary.get("failure_reason") or None,
         infrastructure_failure=infrastructure,
+        stage_latency_samples_ms=sanitise_timing_samples(
+            summary.get("stage_latency_samples_ms"), GRAPH_STAGE_NAMES
+        ),
+        retrieval_latency_samples_ms=sanitise_timing_samples(
+            summary.get("retrieval_latency_samples_ms"), RETRIEVAL_STAGE_NAMES
+        ),
         # The hand-written reference, never the model's own answer.
         ground_truth=str(case.get("ground_truth") or ""),
         # The passages the model actually saw, which is what faithfulness and
@@ -193,6 +219,7 @@ def evaluate_generation(
     from src.self_healing.graph import SelfHealingGraph
 
     settings = get_settings()
+    evaluation_provider = select_route(settings, "evaluation").provider
     cases = cases if cases is not None else load_golden_dataset()
     if limit:
         cases = cases[:limit]
@@ -200,11 +227,37 @@ def evaluate_generation(
     known_policy_ids = set(source_policy_ids().values())
 
     started = datetime.now(UTC)
-    results = [evaluate_case(case, service, known_policy_ids) for case in cases]
+    # Evaluation is an explicit routing workload, not a property inferred from
+    # a golden-case question. Dynamic routing therefore chooses Groq once per
+    # graph run while static mode remains entirely manual.
+    with workload_context("evaluation"):
+        results = [evaluate_case(case, service, known_policy_ids) for case in cases]
 
     scored = [r for r in results if not r.infrastructure_failure]
     blocked = [r for r in results if r.infrastructure_failure]
     answered = [r for r in scored if r.actual_outcome == "answer"]
+    latency_by_stage = {
+        stage: latency_stats(
+            [
+                sample
+                for result in results
+                for sample in result.stage_latency_samples_ms.get(stage, [])
+            ]
+        ).to_dict()
+        for stage in GRAPH_STAGE_NAMES
+        if any(stage in result.stage_latency_samples_ms for result in results)
+    }
+    latency_by_retrieval_component = {
+        stage: latency_stats(
+            [
+                sample
+                for result in results
+                for sample in result.retrieval_latency_samples_ms.get(stage, [])
+            ]
+        ).to_dict()
+        for stage in RETRIEVAL_STAGE_NAMES
+        if any(stage in result.retrieval_latency_samples_ms for result in results)
+    }
 
     by_expected: dict[str, dict[str, int]] = {}
     for result in scored:
@@ -224,9 +277,7 @@ def evaluate_generation(
         )
         if answered
         else None,
-        "citation_completeness": _rate(
-            sum(1 for r in scored if r.citation_complete), len(scored)
-        ),
+        "citation_completeness": _rate(sum(1 for r in scored if r.citation_complete), len(scored)),
         "supported_answer_rate": _rate(
             sum(1 for r in answered if r.verification_status == "supported"), len(answered)
         )
@@ -253,10 +304,14 @@ def evaluate_generation(
         },
         "configuration": {
             "llm_provider": settings.llm_provider,
-            "generation_model": settings.llm_model or settings.gemini_model,
-            "judge_model": settings.gemini_judge_model,
+            "llm_routing_mode": settings.llm_routing_mode,
+            "generation_model": model_name_for("generator", evaluation_provider),
+            "judge_model": model_name_for("judge", evaluation_provider),
+            "routed_provider": evaluation_provider,
             "verifier_backend": settings.verifier_backend,
             "graph_max_retries": settings.graph_max_retries,
+            "llm_execution_profile": settings.llm_execution_profile,
+            "graph_llm_call_limit": settings.effective_graph_llm_call_limit,
             "reranker_enabled": settings.reranker_enabled,
         },
         "status": "BLOCKED" if blocked and not scored else "MEASURED",
@@ -265,10 +320,10 @@ def evaluate_generation(
         "latency": {
             **latency_stats([r.latency_ms for r in results]).to_dict(),
             "stage": "end-to-end per case, model loading excluded (warmed before run)",
+            "by_stage": latency_by_stage,
+            "by_retrieval_component": latency_by_retrieval_component,
         },
-        "blocked": [
-            {"case_id": r.case_id, "reason": r.failure_reason} for r in blocked
-        ],
+        "blocked": [{"case_id": r.case_id, "reason": r.failure_reason} for r in blocked],
         "cases": [r.to_dict() for r in results],
     }
 

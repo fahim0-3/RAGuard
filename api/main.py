@@ -52,6 +52,7 @@ from api.schemas import (
     QueryRequest,
     QueryResponse,
     ReadyResponse,
+    TimingStatsOut,
     TraceStep,
 )
 from api.tracing import (
@@ -67,7 +68,8 @@ from src.config import (
     enforce_production_runtime_storage,
     get_settings,
 )
-from src.generation.llm_factory import LLMProviderError
+from src.generation.llm_factory import LLMProviderError, model_name_for
+from src.generation.llm_routing import select_route
 from src.reranking import (
     is_reranker_model_loaded,
     loaded_reranker_model_name,
@@ -81,7 +83,12 @@ from src.retrieval.embeddings import (
     warmup_embedding_model,
 )
 from src.retrieval.vector_store import close_pool, count_chunks, init_schema
-from src.self_healing.graph import SelfHealingGraph
+from src.self_healing.graph import NODE_NAMES, SelfHealingGraph
+from src.timing import (
+    RETRIEVAL_STAGE_NAMES,
+    aggregate_timing_samples,
+    sanitise_timing_samples,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -259,9 +266,7 @@ AdmissionDep = Annotated[None, Depends(admit_query)]
 # --------------------------------------------------------------------------
 
 
-def _error(
-    request_id: str | None, code: int, error: str, detail: str
-) -> JSONResponse:
+def _error(request_id: str | None, code: int, error: str, detail: str) -> JSONResponse:
     return JSONResponse(
         status_code=code,
         content=ErrorResponse(error=error, detail=detail, request_id=request_id).model_dump(),
@@ -329,7 +334,9 @@ async def http_handler(request: Request, exc: HTTPException) -> JSONResponse:
             "service_busy",
             "The service is temporarily busy. Retry shortly.",
         )
-    return _error(request_id, exc.status_code, "request_failed", "The request could not be completed.")
+    return _error(
+        request_id, exc.status_code, "request_failed", "The request could not be completed."
+    )
 
 
 # --------------------------------------------------------------------------
@@ -369,11 +376,21 @@ def ready(settings: SettingsDep, response: JSONResponse = None) -> Any:  # noqa:
         checks["database"] = {"status": "unavailable", "error": type(exc).__name__}
         problems.append("database unavailable")
 
-    if settings.llm_provider == "gemini" and not settings.google_api_key:
+    route = select_route(settings)
+    provider = route.provider
+    if provider == "gemini" and not settings.google_api_key:
         checks["llm_provider"] = {"status": "unconfigured", "provider": "gemini"}
         problems.append("GOOGLE_API_KEY is not set")
+    elif provider == "groq" and not settings.groq_api_key:
+        checks["llm_provider"] = {"status": "unconfigured", "provider": "groq"}
+        problems.append("GROQ_API_KEY is not set")
     else:
-        checks["llm_provider"] = {"status": "configured", "provider": settings.llm_provider}
+        checks["llm_provider"] = {
+            "status": "configured",
+            "provider": provider,
+            "routing_mode": route.mode,
+            "fallback_providers": list(route.candidates[1:]),
+        }
 
     # The embedding model is a hard requirement for /query: without it there is
     # no dense arm and no query vector. It used to be absent from this probe
@@ -406,6 +423,13 @@ def ready(settings: SettingsDep, response: JSONResponse = None) -> Any:  # noqa:
             "model": settings.resolved_reranker_model,
             "device": settings.resolved_reranker_device,
         }
+    elif settings.reranker_provider == "voyage" and is_reranker_model_loaded():
+        checks["reranker_model"] = {
+            "status": "configured",
+            "provider": "voyage",
+            "model": settings.voyage_rerank_model,
+            "remote_allowed": settings.reranker_remote_allowed,
+        }
     elif is_reranker_model_loaded():
         checks["reranker_model"] = {
             "status": "loaded",
@@ -424,10 +448,20 @@ def ready(settings: SettingsDep, response: JSONResponse = None) -> Any:  # noqa:
             "reranker model failed to load" if error else "reranker model still loading"
         )
 
-    checks["retrieval"] = {
-        "strategy": "hybrid_bm25_dense_rrf",
-        "reranker": settings.resolved_reranker_model,
-    }
+    retrieval_reranker: dict[str, str] = {"strategy": "hybrid_bm25_dense_rrf"}
+    if not settings.reranker_enabled:
+        retrieval_reranker["reranker"] = "disabled"
+    elif settings.reranker_provider == "voyage":
+        retrieval_reranker.update(
+            reranker=settings.voyage_rerank_model,
+            reranker_provider="voyage",
+        )
+    else:
+        retrieval_reranker.update(
+            reranker=settings.resolved_reranker_model,
+            reranker_provider="local",
+        )
+    checks["retrieval"] = retrieval_reranker
 
     if problems:
         return JSONResponse(
@@ -500,12 +534,32 @@ def _public_failure_reason(summary: dict[str, Any]) -> str | None:
     return reason if reason in allowed else ("request_not_completed" if reason else None)
 
 
-def to_response(
-    state: dict[str, Any], summary: dict[str, Any], latency_ms: float
-) -> QueryResponse:
+def _trace_steps(
+    node_sequence: list[str], stage_samples: dict[str, list[float]]
+) -> list[TraceStep]:
+    """Pair each node occurrence with its retry-safe latency sample."""
+    offsets: dict[str, int] = {}
+    trace: list[TraceStep] = []
+    for step, node in enumerate(node_sequence, start=1):
+        index = offsets.get(node, 0)
+        values = stage_samples.get(node, [])
+        duration_ms = values[index] if index < len(values) else 0.0
+        offsets[node] = index + 1
+        trace.append(TraceStep(step=step, node=node, duration_ms=duration_ms))
+    return trace
+
+
+def to_response(state: dict[str, Any], summary: dict[str, Any], latency_ms: float) -> QueryResponse:
     """Project graph state onto the public contract, field by field."""
     verification = summary.get("verification_result") or {}
     grade = summary.get("evidence_grade") or {}
+    stage_samples = sanitise_timing_samples(summary.get("stage_latency_samples_ms"), NODE_NAMES)
+    retrieval_samples = sanitise_timing_samples(
+        summary.get("retrieval_latency_samples_ms"), RETRIEVAL_STAGE_NAMES
+    )
+    stage_stats = aggregate_timing_samples(stage_samples)
+    retrieval_stats = aggregate_timing_samples(retrieval_samples)
+    attributed_ms = sum(stats["total_ms"] for stats in stage_stats.values())
 
     return QueryResponse(
         request_id=str(summary.get("request_id") or ""),
@@ -525,11 +579,13 @@ def to_response(
         retrieved_chunk_count=int(summary.get("retrieved_chunk_count") or 0),
         reranker_used=summary.get("reranker_used"),
         failure_reason=_public_failure_reason(summary),
-        trace=[
-            TraceStep(step=i, node=node)
-            for i, node in enumerate(summary.get("node_sequence") or [], start=1)
-        ],
+        trace=_trace_steps(list(summary.get("node_sequence") or []), stage_samples),
         latency_ms=round(latency_ms, 1),
+        stage_latency_ms={name: TimingStatsOut(**stats) for name, stats in stage_stats.items()},
+        retrieval_latency_ms={
+            name: TimingStatsOut(**stats) for name, stats in retrieval_stats.items()
+        },
+        unattributed_latency_ms=round(max(0.0, latency_ms - attributed_ms), 1),
         prompt_version=str(state.get("prompt_version") or ""),
         llm_calls_used=int(summary.get("llm_calls_used") or 0),
         llm_call_limit=int(summary.get("llm_call_limit") or 0),
@@ -610,8 +666,23 @@ def query(
         llm_calls_used=response.llm_calls_used,
         budget_exhausted=response.budget_exhausted,
         budget_exhaustion_reason=str(summary.get("budget_exhaustion_reason") or ""),
+        stage_latency_ms={
+            name: stats.model_dump() for name, stats in response.stage_latency_ms.items()
+        },
+        retrieval_latency_ms={
+            name: stats.model_dump() for name, stats in response.retrieval_latency_ms.items()
+        },
     )
-    annotate_query_span(request_id=request_id, outcome=response.outcome)
+    annotate_query_span(
+        request_id=request_id,
+        outcome=response.outcome,
+        stage_latency_ms={
+            name: stats.model_dump() for name, stats in response.stage_latency_ms.items()
+        },
+        retrieval_latency_ms={
+            name: stats.model_dump() for name, stats in response.retrieval_latency_ms.items()
+        },
+    )
     log_event(
         "query_completed",
         outcome=response.outcome,
@@ -623,6 +694,12 @@ def query(
         llm_calls_used=response.llm_calls_used,
         budget_exhausted=response.budget_exhausted,
         latency_ms=round(latency_ms, 1),
+        stage_latency_ms={
+            name: stats.total_ms for name, stats in response.stage_latency_ms.items()
+        },
+        retrieval_latency_ms={
+            name: stats.total_ms for name, stats in response.retrieval_latency_ms.items()
+        },
     )
     return response
 
@@ -633,9 +710,7 @@ def query(
 
 
 @app.post("/retrieve")
-def retrieve(
-    request: QueryRequest, settings: SettingsDep, _admin: AdminDep
-) -> dict[str, Any]:
+def retrieve(request: QueryRequest, settings: SettingsDep, _admin: AdminDep) -> dict[str, Any]:
     """Retrieval and reranking only, with no LLM call.
 
     The endpoint to use when deciding whether a failure is retrieval or
@@ -651,6 +726,17 @@ def retrieve(
     return {
         "query": request.query,
         "reranker_used": result.reranker_used,
+        "reranker": result.observability_dict(),
+        "rerank_latency_ms": {
+            "queue_wait": round(result.queue_wait_ms, 1),
+            "inference": round(result.inference_latency_ms, 1),
+            "hosted": round(result.hosted_latency_ms, 1),
+            "total": round(
+                result.total_reranker_latency_ms
+                or (result.hosted_latency_ms + result.queue_wait_ms + result.inference_latency_ms),
+                1,
+            ),
+        },
         "chunks": [c.to_dict() for c in result.chunks],
     }
 
@@ -698,19 +784,22 @@ def prometheus_metrics(_admin: AdminDep) -> Response:
 @app.get("/config")
 def config(settings: SettingsDep) -> dict[str, Any]:
     """Non-secret configuration, for reproducing a run. Never includes a key."""
+    route = select_route(settings)
     return {
         "api_version": API_VERSION,
         "runtime_environment": settings.runtime_environment,
         "runtime_profile": settings.runtime_profile,
         "llm_provider": settings.llm_provider,
-        "generation_model": (
-            settings.llm_model
-            or (settings.gemini_model if settings.llm_provider == "gemini" else settings.ollama_model)
-        ),
+        "llm_routing_mode": route.mode,
+        "routed_provider": route.provider,
+        "fallback_providers": list(route.candidates[1:]),
+        "generation_model": model_name_for("generator", route.provider),
         "embedding_model": settings.embedding_model,
         "reranker_model": settings.resolved_reranker_model,
         "configured_full_reranker_model": settings.reranker_model,
         "reranker_device": settings.resolved_reranker_device,
+        "reranker_batch_size": settings.resolved_reranker_batch_size,
+        "reranker_max_concurrency": settings.reranker_max_concurrency,
         "chunk_size": settings.chunk_size,
         "chunk_overlap": settings.chunk_overlap,
         "dense_top_k": settings.dense_top_k,
@@ -723,6 +812,7 @@ def config(settings: SettingsDep) -> dict[str, Any]:
         "graph_max_retries": settings.graph_max_retries,
         "graph_max_regenerations": settings.graph_max_regenerations,
         "graph_request_timeout_s": settings.graph_request_timeout_s,
-        "graph_llm_call_limit": settings.graph_llm_call_limit,
+        "graph_llm_call_limit": settings.effective_graph_llm_call_limit,
+        "llm_execution_profile": settings.llm_execution_profile,
         "verifier_backend": settings.verifier_backend,
     }

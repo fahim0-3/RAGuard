@@ -185,7 +185,9 @@ def evaluate_case(
         return result
 
     result.metrics = {
-        **{f"hit_rate_at_{k}": hit_rate_at_k(ranked_sources, expected, k) for k in HIT_RATE_CUTOFFS},
+        **{
+            f"hit_rate_at_{k}": hit_rate_at_k(ranked_sources, expected, k) for k in HIT_RATE_CUTOFFS
+        },
         **{f"recall_at_{k}": recall_at_k(ranked_sources, expected, k) for k in RECALL_CUTOFFS},
         f"mrr_at_{MRR_CUTOFF}": reciprocal_rank_at_k(ranked_sources, expected, MRR_CUTOFF),
     }
@@ -220,9 +222,7 @@ def aggregate(results: list[CaseResult]) -> dict[str, float]:
         *[f"recall_at_{k}" for k in RECALL_CUTOFFS],
         f"mrr_at_{MRR_CUTOFF}",
     ]
-    aggregated = {
-        name: _mean([r.metrics.get(name, 0.0) for r in scored]) for name in metric_names
-    }
+    aggregated = {name: _mean([r.metrics.get(name, 0.0) for r in scored]) for name in metric_names}
     aggregated["keyword_recall"] = _mean([r.keyword_recall for r in scored])
     return aggregated
 
@@ -300,8 +300,10 @@ def main() -> int:
         f"cases    : {payload['dataset']['scored_cases']} scored, "
         f"{payload['dataset']['abstention_cases_excluded']} abstention case(s) excluded"
     )
-    print(f"corpus   : {payload['corpus']['chunks_indexed']} chunks, "
-          f"{payload['corpus']['documents']} documents\n")
+    print(
+        f"corpus   : {payload['corpus']['chunks_indexed']} chunks, "
+        f"{payload['corpus']['documents']} documents\n"
+    )
     for name, value in payload["measured_metrics"].items():
         print(f"  {name:<20} {value:.4f}")
 

@@ -170,9 +170,7 @@ def test_direct_access_still_raises_for_callers_that_can_handle_it(
 def client(monkeypatch):
     """No lifespan: these tests drive the endpoints, not start-up."""
     monkeypatch.setattr("api.main.is_reranker_model_loaded", lambda: True)
-    monkeypatch.setattr(
-        "api.main.loaded_reranker_model_name", lambda: "test-reranker"
-    )
+    monkeypatch.setattr("api.main.loaded_reranker_model_name", lambda: "test-reranker")
     test_client = TestClient(app, raise_server_exceptions=False)
     yield test_client
     app.dependency_overrides.clear()
@@ -205,9 +203,7 @@ def test_ready_is_503_while_the_model_is_loading(client, monkeypatch):
 def test_ready_is_503_and_says_failed_when_loading_broke(client, monkeypatch):
     monkeypatch.setattr("api.main.count_chunks", lambda: 22)
     monkeypatch.setattr("api.main.is_model_loaded", lambda: False)
-    monkeypatch.setattr(
-        "api.main.model_load_error", lambda: "OSError: connection reset by peer"
-    )
+    monkeypatch.setattr("api.main.model_load_error", lambda: "OSError: connection reset by peer")
 
     response = client.get("/ready")
 
@@ -316,12 +312,8 @@ def test_startup_schedules_a_background_warmup(monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr("api.main.init_schema", lambda: None)
     monkeypatch.setattr("api.main.count_chunks", lambda: 22)
-    monkeypatch.setattr(
-        "api.main.warmup_embedding_model", lambda: calls.append("warmed") or True
-    )
-    monkeypatch.setattr(
-        "api.main.warmup_reranker_model", lambda: calls.append("reranked") or True
-    )
+    monkeypatch.setattr("api.main.warmup_embedding_model", lambda: calls.append("warmed") or True)
+    monkeypatch.setattr("api.main.warmup_reranker_model", lambda: calls.append("reranked") or True)
 
     with TestClient(app):
         # Entering the context runs the lifespan, which starts a daemon thread.
@@ -343,12 +335,8 @@ def test_startup_skips_model_warmup_when_database_initialization_fails(monkeypat
         "api.main.count_chunks",
         lambda: (_ for _ in ()).throw(AssertionError("count must not run")),
     )
-    monkeypatch.setattr(
-        "api.main.warmup_embedding_model", lambda: calls.append("warmed") or True
-    )
-    monkeypatch.setattr(
-        "api.main.warmup_reranker_model", lambda: calls.append("reranked") or True
-    )
+    monkeypatch.setattr("api.main.warmup_embedding_model", lambda: calls.append("warmed") or True)
+    monkeypatch.setattr("api.main.warmup_reranker_model", lambda: calls.append("reranked") or True)
 
     with TestClient(app) as started_client:
         assert started_client.get("/health").status_code == 200
@@ -360,12 +348,8 @@ def test_startup_skips_model_warmup_until_the_corpus_is_ingested(monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr("api.main.init_schema", lambda: None)
     monkeypatch.setattr("api.main.count_chunks", lambda: 0)
-    monkeypatch.setattr(
-        "api.main.warmup_embedding_model", lambda: calls.append("warmed") or True
-    )
-    monkeypatch.setattr(
-        "api.main.warmup_reranker_model", lambda: calls.append("reranked") or True
-    )
+    monkeypatch.setattr("api.main.warmup_embedding_model", lambda: calls.append("warmed") or True)
+    monkeypatch.setattr("api.main.warmup_reranker_model", lambda: calls.append("reranked") or True)
 
     with TestClient(app) as started_client:
         assert started_client.get("/health").status_code == 200

@@ -21,19 +21,19 @@ import logging
 import re
 from dataclasses import dataclass, field
 
-from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
 from src.config import get_settings
-from src.generation.llm_provider import get_chat_model
+from src.generation.llm_factory import build_json_chain
 from src.generation.prompts import (
     CITATION_CHECK_HUMAN_PROMPT,
     CITATION_CHECK_SYSTEM_PROMPT,
     ENTAILMENT_OUTPUT_SCHEMA,
 )
+from src.generation.structured_schemas import CITATION_CHECK_SCHEMA
 from src.retrieval.bm25 import tokenize
 from src.retrieval.types import RetrievedChunk
-from src.self_healing.claims import extract_claims
+from src.self_healing.claims import ClaimCitationInput, claim_citation_values, extract_claims
 from src.self_healing.execution_budget import (
     ExecutionBudgetExceeded,
     reserve_llm_call,
@@ -115,16 +115,16 @@ def missing_factual_tokens(claim: str, passage: str) -> list[str]:
     return [fact for fact in facts if fact not in passage_upper]
 
 
-def _build_entailment_chain(
-    *, timeout_s: float | None = None, max_retries: int | None = None
-):
+def _build_entailment_chain(*, timeout_s: float | None = None, max_retries: int | None = None):
     prompt = ChatPromptTemplate.from_messages(
         [("system", CITATION_CHECK_SYSTEM_PROMPT), ("human", CITATION_CHECK_HUMAN_PROMPT)]
     ).partial(output_schema=ENTAILMENT_OUTPUT_SCHEMA)
-    return (
-        prompt
-        | get_chat_model("judge", timeout_s=timeout_s, max_retries=max_retries)
-        | JsonOutputParser()
+    return build_json_chain(
+        prompt,
+        "judge",
+        CITATION_CHECK_SCHEMA,
+        timeout_s=timeout_s,
+        max_retries=max_retries,
     )
 
 
@@ -153,7 +153,7 @@ def verify_citations(
     citations: list[str],
     retrieved: list[RetrievedChunk],
     use_llm: bool = False,
-    claim_citations: list[dict[str, object]] | None = None,
+    claim_citations: list[ClaimCitationInput] | None = None,
 ) -> CitationReport:
     """Verify that an answer is grounded in the passages it cites."""
     settings = get_settings()
@@ -165,7 +165,7 @@ def verify_citations(
         all_labels = [
             label
             for mapping in mappings
-            for label in mapping.get("citations", [])
+            for label in (claim_citation_values(mapping) or ("", []))[1]
             if isinstance(label, str)
         ]
     invalid_labels = [label for label in all_labels if label not in by_label]
@@ -194,9 +194,7 @@ def verify_citations(
     for claim_model in claims:
         claim = claim_model.claim_text
         cited_chunks = [
-            by_label[label]
-            for label in claim_model.citation_labels
-            if label in by_label
+            by_label[label] for label in claim_model.citation_labels if label in by_label
         ]
         if not cited_chunks:
             verdicts.append(
@@ -213,9 +211,7 @@ def verify_citations(
                 best_missing = missing_factual_tokens(claim, chunk.content)
                 best_passage = chunk.content
 
-        supported = (
-            best_overlap >= settings.citation_support_threshold and not best_missing
-        )
+        supported = best_overlap >= settings.citation_support_threshold and not best_missing
         method = "lexical"
 
         if not supported and use_llm and best_passage:
@@ -235,9 +231,7 @@ def verify_citations(
             )
         )
 
-    report = CitationReport(
-        valid=False, invalid_labels=invalid_labels, claim_verdicts=verdicts
-    )
+    report = CitationReport(valid=False, invalid_labels=invalid_labels, claim_verdicts=verdicts)
     # An answer is valid only when no label was invented and every claim holds.
     report.valid = not invalid_labels and all(v.supported for v in verdicts)
     return report

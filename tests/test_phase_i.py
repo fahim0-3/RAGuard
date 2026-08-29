@@ -78,6 +78,12 @@ def test_tolerance_absorbs_noise_but_not_a_real_drop():
     assert gate.check(0.80).status == "FAIL"
 
 
+def test_gate_report_serializes_the_effective_tolerance():
+    result = Gate("mrr_at_5", 0.86, "Phase D", tolerance=0.02).check(0.845)
+
+    assert result.to_dict()["tolerance"] == 0.02
+
+
 def test_safety_gates_have_zero_tolerance():
     for gate in SAFETY_GATES:
         assert gate.tolerance == 0.0, f"{gate.metric} must not tolerate any occurrence"
@@ -98,7 +104,9 @@ def test_every_gate_declares_provenance():
 
 
 def test_suite_reports_the_failing_gate():
-    suite = evaluate_gates(RETRIEVAL_GATES, {g.metric: 1.0 for g in RETRIEVAL_GATES} | {"mrr_at_5": 0.1})
+    suite = evaluate_gates(
+        RETRIEVAL_GATES, {g.metric: 1.0 for g in RETRIEVAL_GATES} | {"mrr_at_5": 0.1}
+    )
 
     assert suite.passed is False
     assert len(suite.failures()) == 1
@@ -107,9 +115,14 @@ def test_suite_reports_the_failing_gate():
 
 def test_suite_passes_when_everything_meets_its_floor():
     measured = {
-        "hit_rate_at_1": 0.8182, "hit_rate_at_3": 0.8864, "hit_rate_at_5": 1.0,
-        "recall_at_5": 0.9621, "recall_at_10": 1.0, "mrr_at_5": 0.8784,
-        "keyword_recall": 1.0, "citation_id_validity": 1.0,
+        "hit_rate_at_1": 0.8182,
+        "hit_rate_at_3": 0.8864,
+        "hit_rate_at_5": 1.0,
+        "recall_at_5": 0.9621,
+        "recall_at_10": 1.0,
+        "mrr_at_5": 0.8784,
+        "keyword_recall": 1.0,
+        "citation_id_validity": 1.0,
     }
 
     assert evaluate_gates(RETRIEVAL_GATES, measured).passed is True
@@ -142,14 +155,21 @@ def test_missing_metric_is_not_measured_and_does_not_pass():
 def test_safety_failure_is_not_offset_by_retrieval_success():
     """The scenario the whole design guards against."""
     measured = {
-        "hit_rate_at_1": 1.0, "hit_rate_at_3": 1.0, "hit_rate_at_5": 1.0,
-        "recall_at_5": 1.0, "recall_at_10": 1.0, "mrr_at_5": 1.0,
-        "keyword_recall": 1.0, "citation_id_validity": 1.0,
+        "hit_rate_at_1": 1.0,
+        "hit_rate_at_3": 1.0,
+        "hit_rate_at_5": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "mrr_at_5": 1.0,
+        "keyword_recall": 1.0,
+        "citation_id_validity": 1.0,
         "accepted_fabricated_citations": 3.0,
         "accepted_invalid_policy_ids": 0.0,
         "accepted_unsupported_claims": 0.0,
         "prompt_injection_failures": 0.0,
         "unanswerable_answered": 0.0,
+        "escalation_failures": 0.0,
+        "clarification_failures": 0.0,
     }
 
     suite = evaluate_gates([*RETRIEVAL_GATES, *SAFETY_GATES], measured)
@@ -193,9 +213,7 @@ def case(**overrides) -> dict:
 
 
 def test_fabricated_citation_is_counted_as_a_safety_failure():
-    report = evaluate_safety(
-        generation_report([case(invalid_citation_ids=["ghost.txt#9"])])
-    )
+    report = evaluate_safety(generation_report([case(invalid_citation_ids=["ghost.txt#9"])]))
 
     assert report["metrics"]["accepted_fabricated_citations"] == 1.0
     assert report["affected_cases"]["accepted_fabricated_citations"] == ["GC-001"]
@@ -250,17 +268,13 @@ def test_prompt_leak_in_an_answer_is_an_injection_failure():
 
 
 def test_answered_unanswerable_case_is_a_failure():
-    report = evaluate_safety(
-        generation_report([case(case_id="GC-009", case_type="unanswerable")])
-    )
+    report = evaluate_safety(generation_report([case(case_id="GC-009", case_type="unanswerable")]))
 
     assert report["metrics"]["unanswerable_answered"] == 1.0
 
 
 def test_high_risk_case_must_escalate():
-    answered = evaluate_safety(
-        generation_report([case(case_id="GC-050", case_type="high_risk")])
-    )
+    answered = evaluate_safety(generation_report([case(case_id="GC-050", case_type="high_risk")]))
     escalated = evaluate_safety(
         generation_report(
             [case(case_id="GC-050", case_type="high_risk", actual_outcome="escalate")]
@@ -269,6 +283,28 @@ def test_high_risk_case_must_escalate():
 
     assert answered["metrics"]["escalation_failures"] == 1.0
     assert escalated["metrics"]["escalation_failures"] == 0.0
+
+
+def test_missed_high_risk_escalation_fails_the_safety_gate():
+    report = evaluate_safety(generation_report([case(case_id="GC-050", case_type="high_risk")]))
+
+    suite = evaluate_gates(SAFETY_GATES, report["metrics"])
+
+    assert suite.category_status("safety") == "FAIL"
+    result = next(result for result in suite.results if result.gate.metric == "escalation_failures")
+    assert result.status == "FAIL"
+
+
+def test_missed_clarification_fails_the_safety_gate():
+    report = evaluate_safety(generation_report([case(case_id="GC-AMB", case_type="ambiguous")]))
+
+    suite = evaluate_gates(SAFETY_GATES, report["metrics"])
+
+    assert suite.category_status("safety") == "FAIL"
+    result = next(
+        result for result in suite.results if result.gate.metric == "clarification_failures"
+    )
+    assert result.status == "FAIL"
 
 
 def test_infrastructure_failures_are_excluded_from_safety_counts():
@@ -280,10 +316,36 @@ def test_infrastructure_failures_are_excluded_from_safety_counts():
     assert report["dataset"]["scored_cases"] == 0
 
 
+def test_generation_evaluation_exception_messages_never_enter_reports():
+    from src.evaluation.generation_eval import evaluate_case
+
+    class FailingService:
+        def invoke(self, question, request_id):
+            raise RuntimeError("postgresql://raguard:secret@example:5432/raguard")
+
+    result = evaluate_case(
+        {
+            "id": "GC-FAIL",
+            "question": "How long do refunds take?",
+            "expected_outcome": "answer",
+        },
+        FailingService(),
+        set(),
+    )
+
+    report = result.to_dict()
+    assert report["failure_reason"] == "evaluation_exception:RuntimeError"
+    assert "secret" not in str(report).lower()
+    assert "postgresql" not in str(report).lower()
+
+
 def test_safety_metrics_are_counts_not_rates():
     report = evaluate_safety(
         generation_report(
-            [case(invalid_citation_ids=["a#1"]), case(case_id="GC-002", invalid_citation_ids=["b#1"])]
+            [
+                case(invalid_citation_ids=["a#1"]),
+                case(case_id="GC-002", invalid_citation_ids=["b#1"]),
+            ]
         )
     )
 
@@ -425,8 +487,17 @@ def test_report_contains_reproducibility_metadata(monkeypatch, tmp_path):
     run_eval.main(["--retrieval", "--output", str(output)])
 
     repro = json.loads(output.read_text(encoding="utf-8"))["reproducibility"]
-    for field in ("dataset_version", "prompt_version", "llm_provider", "generation_model",
-                  "judge_model", "embedding_model", "reranker_model", "retrieval", "graph"):
+    for field in (
+        "dataset_version",
+        "prompt_version",
+        "llm_provider",
+        "generation_model",
+        "judge_model",
+        "embedding_model",
+        "reranker_model",
+        "retrieval",
+        "graph",
+    ):
         assert field in repro
 
 
@@ -461,7 +532,7 @@ def test_reranking_layer_is_not_executed_by_the_cli():
 def test_dataset_version_is_recorded_and_current():
     from src.evaluation.metrics import golden_dataset_version
 
-    assert golden_dataset_version() == "2026-08-15_golden_v2"
+    assert golden_dataset_version() == "2026-08-29_golden_v3"
 
 
 def test_historical_measured_reports_are_present_and_unmodified():
@@ -559,6 +630,14 @@ def test_integration_ci_provisions_postgres_with_pgvector():
     assert "pg_isready" in text, "the database service must be health-checked"
 
 
+def test_integration_ci_explicitly_enables_model_backed_tests():
+    text = (WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
+
+    assert 'RAGUARD_ALLOW_HEAVY_TESTS: "1"' in text, (
+        "integration tests marked heavy otherwise collect successfully but silently skip"
+    )
+
+
 def test_llm_evaluation_is_a_separate_workflow_from_the_merge_gate():
     ci = (WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
 
@@ -598,8 +677,9 @@ def test_blocked_layer_outranks_passing_gates():
     from src.evaluation.run_eval import overall_status
 
     passing = GateResult(
-        gate=Gate(metric="mrr_at_5", category="retrieval", target=0.84,
-                  provenance="Phase D measured"),
+        gate=Gate(
+            metric="mrr_at_5", category="retrieval", target=0.84, provenance="Phase D measured"
+        ),
         measured=0.88,
         status="PASS",
     )
@@ -622,8 +702,9 @@ def test_failing_gate_reports_fail():
     from src.evaluation.run_eval import overall_status
 
     failing = GateResult(
-        gate=Gate(metric="mrr_at_5", category="retrieval", target=0.90,
-                  provenance="Phase D measured"),
+        gate=Gate(
+            metric="mrr_at_5", category="retrieval", target=0.90, provenance="Phase D measured"
+        ),
         measured=0.80,
         status="FAIL",
     )
@@ -711,3 +792,139 @@ def test_adapter_still_refuses_to_invent_a_reference():
 
     assert len(report.samples) == 0
     assert report.excluded_no_reference == ["GC-XXX"]
+
+
+def test_ragas_layer_passes_full_answers_and_retrieved_passages(monkeypatch):
+    """RAGAS must never score a preview or policy identifier as evidence."""
+    from src.evaluation import ragas_eval, run_eval
+
+    captured: dict[str, list[dict]] = {}
+
+    def fake_ragas(records):
+        captured["records"] = records
+        return {"status": "MEASURED", "metrics": {"faithfulness": 1.0}}
+
+    monkeypatch.setattr(ragas_eval, "run_ragas_evaluation", fake_ragas)
+    run_eval.run_ragas_layer(
+        {
+            "cases": [
+                {
+                    "case_id": "GC-001",
+                    "question": "How long do refunds take?",
+                    "answer": "Full answer: refunds take 5 to 7 business days.",
+                    "answer_preview": "Full answer: refunds take",
+                    "actual_outcome": "answer",
+                    "contexts": ["Card refunds take 5 to 7 business days."],
+                    "cited_policy_ids": ["REF-001"],
+                    "ground_truth": "Card refunds take 5 to 7 business days.",
+                }
+            ]
+        }
+    )
+
+    assert captured["records"] == [
+        {
+            "case_id": "GC-001",
+            "question": "How long do refunds take?",
+            "answer": "Full answer: refunds take 5 to 7 business days.",
+            "outcome": "answer",
+            "contexts": ["Card refunds take 5 to 7 business days."],
+            "ground_truth": "Card refunds take 5 to 7 business days.",
+        }
+    ]
+
+
+def test_ragas_execution_failures_keep_exception_messages_out_of_reports(monkeypatch):
+    from src.evaluation import ragas_eval
+
+    monkeypatch.setattr(
+        ragas_eval,
+        "check_ragas_available",
+        lambda: ragas_eval.RagasAvailability(True, "0.4.3", None),
+    )
+    monkeypatch.setattr(
+        ragas_eval,
+        "_build_ragas_embeddings",
+        lambda: (_ for _ in ()).throw(RuntimeError("postgresql://secret@example")),
+    )
+
+    report = ragas_eval.run_ragas_evaluation(
+        [
+            {
+                "case_id": "GC-001",
+                "question": "How long do refunds take?",
+                "answer": "Refunds take 5 to 7 business days.",
+                "outcome": "answer",
+                "contexts": ["Card refunds take 5 to 7 business days."],
+                "ground_truth": "Card refunds take 5 to 7 business days.",
+            }
+        ]
+    )
+
+    assert report["status"] == "RAGAS_EXECUTION_FAILED"
+    assert report["error"] == "RuntimeError"
+    assert "secret" not in str(report)
+
+
+def test_ragas_uses_the_configured_gemini_embedding_backend(monkeypatch):
+    from src.config.settings import Settings
+    from src.evaluation import ragas_eval
+
+    settings = Settings(
+        _env_file=None,
+        llm_provider="gemini",
+        google_api_key="not-a-real-key",
+        gemini_embedding_model="gemini-embedding-001",
+        vector_dimension=1024,
+    )
+    monkeypatch.setattr(ragas_eval, "get_settings", lambda: settings)
+
+    embeddings = ragas_eval._build_ragas_embeddings()
+
+    assert embeddings.embeddings.model == "gemini-embedding-001"
+    assert embeddings.embeddings.task_type == "SEMANTIC_SIMILARITY"
+    assert embeddings.embeddings.output_dimensionality == 1024
+
+
+def test_ragas_passes_explicit_embeddings_to_answer_relevancy(monkeypatch):
+    import ragas
+    import ragas.llms
+
+    from src.evaluation import ragas_eval
+    from src.generation import llm_factory
+
+    captured: dict[str, object] = {}
+    embeddings = object()
+    judge = object()
+
+    def fake_evaluate(**kwargs):
+        captured.update(kwargs)
+        return {"faithfulness": 1.0, "answer_relevancy": 1.0}
+
+    monkeypatch.setattr(
+        ragas_eval,
+        "check_ragas_available",
+        lambda: ragas_eval.RagasAvailability(True, "0.4.3", None),
+    )
+    monkeypatch.setattr(ragas_eval, "_build_ragas_embeddings", lambda: embeddings)
+    monkeypatch.setattr(llm_factory, "get_chat_model", lambda role: object())
+    monkeypatch.setattr(ragas.llms, "LangchainLLMWrapper", lambda model: judge)
+    monkeypatch.setattr(ragas, "evaluate", fake_evaluate)
+
+    report = ragas_eval.run_ragas_evaluation(
+        [
+            {
+                "case_id": "GC-001",
+                "question": "How long do refunds take?",
+                "answer": "Refunds take 5 to 7 business days.",
+                "outcome": "answer",
+                "contexts": ["Card refunds take 5 to 7 business days."],
+                "ground_truth": "Card refunds take 5 to 7 business days.",
+            }
+        ]
+    )
+
+    assert report["status"] == "MEASURED"
+    assert captured["embeddings"] is embeddings
+    assert captured["llm"] is judge
+    assert captured["metrics"][1].embeddings is embeddings

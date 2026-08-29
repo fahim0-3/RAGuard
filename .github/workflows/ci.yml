@@ -87,6 +87,7 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgresql://raguard:raguard@localhost:5432/raguard
+      RAGUARD_ALLOW_HEAVY_TESTS: "1"
       MODEL_DEVICE: cpu
       HF_HOME: ${{ github.workspace }}/.hf-cache
       # No GOOGLE_API_KEY on purpose. If this job ever needs one, a
@@ -110,7 +111,7 @@ jobs:
           key: hf-${{ runner.os }}-bge-m3-reranker-v2-m3-v1
 
       - name: Install dependencies
-        run: uv sync --locked --no-default-groups --group dev
+        run: uv sync --locked --no-default-groups --group dev --group local-models
 
       - name: Enable pgvector extension
         # The pgvector image ships the extension but does not enable it in any

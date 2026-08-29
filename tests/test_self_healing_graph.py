@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+from src.reranking import RerankResult
 from src.retrieval.types import RetrievedChunk
 from src.self_healing import graph as graph_module
 from src.self_healing.graph import (
@@ -64,23 +65,37 @@ class StubRetriever:
 
 
 class StubReranker:
+    """Returns a real :class:`RerankResult`, not an ad-hoc double.
+
+    The rerank node reads the provider observability contract
+    (`observability_dict()`), so a stub that omits it lets a contract change
+    pass this suite and fail in production. Constructing the real dataclass
+    keeps the double honest and costs nothing.
+    """
+
     def __init__(self, used=True):
         self.used = used
 
     def rerank_with_diagnostics(self, query, chunks, top_k=None):
-        class R:
-            pass
-
-        r = R()
-        r.chunks = list(chunks)[:5]
-        r.reranker_used = self.used
-        r.failure = None
-        return r
+        candidates = list(chunks)
+        return RerankResult(
+            query=query,
+            chunks=candidates[:5],
+            reranker_used=self.used,
+            candidate_count=len(candidates),
+            actual_provider="local" if self.used else "rrf",
+        )
 
 
 class StubAnswer:
-    def __init__(self, answer="Card refunds take 5 to 7 business days.",
-                 outcome="answered", citations=None, confidence=0.9, failure_reason=None):
+    def __init__(
+        self,
+        answer="Card refunds take 5 to 7 business days.",
+        outcome="answered",
+        citations=None,
+        confidence=0.9,
+        failure_reason=None,
+    ):
         self.answer = answer
         self.outcome = outcome
         self.citation_ids = citations if citations is not None else ["refund_policy.txt#1"]
@@ -136,21 +151,17 @@ def world(monkeypatch):
     state = {
         "retriever": StubRetriever([[chunk(1), chunk(2)]]),
         "reranker": StubReranker(),
-        "grades": [EvidenceGrade(relevant=True, sufficient=True, confidence=0.9,
-                                 rationale="ok")],
+        "grades": [EvidenceGrade(relevant=True, sufficient=True, confidence=0.9, rationale="ok")],
         "answer": StubAnswer(),
         "grade_calls": 0,
         "generation_calls": [],
     }
 
-    monkeypatch.setattr(
-        "src.retrieval.hybrid.get_hybrid_retriever", lambda: state["retriever"]
-    )
+    monkeypatch.setattr("src.retrieval.hybrid.get_hybrid_retriever", lambda: state["retriever"])
     monkeypatch.setattr("src.reranking.get_reranker", lambda: state["reranker"])
+
     def fake_generate(question, chunks, **kwargs):
-        state["generation_calls"].append(
-            {"question": question, "chunks": list(chunks), **kwargs}
-        )
+        state["generation_calls"].append({"question": question, "chunks": list(chunks), **kwargs})
         return state["answer"]
 
     monkeypatch.setattr(
@@ -178,8 +189,11 @@ def run(world_state, question="How long do card refunds take?", verifier=None, r
 
 
 INSUFFICIENT = EvidenceGrade(
-    relevant=False, sufficient=False, confidence=0.1,
-    missing_information=["the refund processing schedule"], rationale="weak",
+    relevant=False,
+    sufficient=False,
+    confidence=0.1,
+    missing_information=["the refund processing schedule"],
+    rationale="weak",
 )
 SUFFICIENT = EvidenceGrade(relevant=True, sufficient=True, confidence=0.95, rationale="ok")
 
@@ -255,9 +269,34 @@ def test_answer_path_visits_the_expected_nodes(world):
 
     sequence = result["node_sequence"]
     assert sequence == [
-        NODE_SANITIZE, NODE_RISK, NODE_AMBIGUITY, NODE_RETRIEVE,
-        NODE_RERANK, NODE_GRADER, NODE_GENERATE, NODE_VERIFY, NODE_FINALIZE,
+        NODE_SANITIZE,
+        NODE_RISK,
+        NODE_AMBIGUITY,
+        NODE_RETRIEVE,
+        NODE_RERANK,
+        NODE_GRADER,
+        NODE_GENERATE,
+        NODE_VERIFY,
+        NODE_FINALIZE,
     ]
+
+
+def test_answer_path_records_one_latency_sample_per_executed_node(world):
+    result = run(world)
+
+    samples = result["stage_latency_samples_ms"]
+    assert set(samples) == set(result["node_sequence"])
+    assert all(len(values) == 1 for values in samples.values())
+    assert all(value >= 0.0 for values in samples.values() for value in values)
+
+
+def test_retries_append_latency_samples_instead_of_overwriting(world):
+    world["grades"] = [INSUFFICIENT]
+
+    result = run(world)
+
+    assert len(result["stage_latency_samples_ms"][NODE_RETRIEVE]) == 3
+    assert len(result["stage_latency_samples_ms"][NODE_REWRITER]) == 2
 
 
 # --------------------------------------------------------------------------
@@ -586,9 +625,7 @@ def test_evidence_grade_normalises_missing_information():
 
 
 def test_evidence_grade_ignores_unknown_fields():
-    grade = EvidenceGrade.model_validate(
-        {"sufficient": True, "chain_of_thought": "step 1: ..."}
-    )
+    grade = EvidenceGrade.model_validate({"sufficient": True, "chain_of_thought": "step 1: ..."})
 
     assert not hasattr(grade, "chain_of_thought")
 
@@ -600,7 +637,10 @@ def test_evidence_grade_ignores_unknown_fields():
 
 def test_provider_failure_during_generation_abstains(world):
     world["answer"] = StubAnswer(
-        answer="", outcome="provider_error", citations=[], confidence=0.0,
+        answer="",
+        outcome="provider_error",
+        citations=[],
+        confidence=0.0,
         failure_reason="TimeoutError: deadline exceeded",
     )
 
@@ -798,8 +838,9 @@ def test_genuine_delayed_order_questions_still_clarify(question):
         ("I have a problem with my order", "underspecified: unspecified_problem"),
         ("How long do I have?", "underspecified: bare_timeframe"),
         ("Can I send it back?", "underspecified: bare_it_reference"),
+        ("Can I return it?", "underspecified: bare_it_reference"),
     ],
-    ids=["unspecified_problem", "bare_timeframe", "bare_it_reference"],
+    ids=["unspecified_problem", "bare_timeframe", "bare_it_reference", "return_it"],
 )
 def test_other_ambiguity_rules_are_unaffected(question, expected_rule):
     from src.self_healing.ambiguity_detector import detect_ambiguity
@@ -1058,6 +1099,37 @@ def test_rewriter_drops_generic_missing_information(monkeypatch):
     )
 
     assert seen["question"] == "What is the return policy? return shipping costs"
+
+
+def test_internal_grader_diagnostics_never_reach_rewrite_queries(monkeypatch):
+    from src.self_healing import query_rewriter as rewriter
+
+    seen = {}
+
+    def fake_rewrite_query(question, **kwargs):
+        seen["question"] = question
+        return ["refund policy"]
+
+    monkeypatch.setattr(rewriter, "rewrite_query", fake_rewrite_query)
+    rewriter.rewrite_once(
+        "How long does a refund take?",
+        missing_information=["semantic evidence grader unavailable", "refund timing"],
+    )
+
+    assert seen["question"] == "How long does a refund take? refund timing"
+    assert "semantic evidence grader" not in seen["question"].lower()
+
+
+def test_internal_grader_diagnostics_never_reach_customer_abstention():
+    from src.self_healing.abstention import abstention_message
+
+    message = abstention_message(
+        "insufficient_evidence",
+        EvidenceGrade(missing_information=["semantic evidence grader unavailable"]),
+    )
+
+    assert "semantic evidence grader" not in message.lower()
+    assert "to answer this i would need" not in message.lower()
 
 
 def test_identifier_match_respects_word_boundaries():

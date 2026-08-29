@@ -53,9 +53,22 @@ def test_valid_production_configuration_passes():
         ),
         ({"google_api_key": "your-key"}, "google_api_key_missing"),
         (
+            {"reranker_provider": "voyage", "reranker_remote_allowed": False},
+            "reranker_remote_not_allowed",
+        ),
+        (
+            {
+                "reranker_provider": "voyage",
+                "reranker_remote_allowed": True,
+                "voyage_api_key": "your-key",
+            },
+            "voyage_api_key_missing",
+        ),
+        (
             {"llm_provider": "ollama", "ollama_base_url": "http://localhost:11434"},
             "ollama_url_invalid",
         ),
+        ({"llm_provider": "groq", "groq_api_key": "your-key"}, "groq_api_key_missing"),
         ({"admin_api_key": "short"}, "admin_api_key_weak"),
         ({"cors_allow_origins": "*"}, "cors_origins_unsafe"),
         ({"cors_allow_origins": "http://app.example.net"}, "cors_origin_not_https"),
@@ -72,7 +85,9 @@ def test_unsafe_production_configuration_is_rejected(overrides, expected_code):
 
 
 def test_production_exception_contains_codes_but_not_secrets():
-    settings = production_settings(admin_api_key="private-secret", google_api_key="private-provider")
+    settings = production_settings(
+        admin_api_key="private-secret", google_api_key="private-provider"
+    )
 
     with pytest.raises(ProductionConfigurationError) as raised:
         enforce_production_configuration(settings)

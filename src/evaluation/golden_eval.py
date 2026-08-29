@@ -58,6 +58,7 @@ from src.evaluation.retrieval_eval import (
     reciprocal_rank_at_k,
 )
 from src.retrieval.types import RetrievedChunk
+from src.timing import RETRIEVAL_STAGE_NAMES, sanitise_timing_samples
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,7 @@ class GoldenCaseResult:
     citation_id_validity: float | None = None
     invalid_policy_ids: list[str] = field(default_factory=list)
     latency_ms: float = 0.0
+    retrieval_latency_ms: dict[str, float] = field(default_factory=dict)
     scored: bool = True
     failed: bool = False
     failure_reasons: list[str] = field(default_factory=list)
@@ -125,6 +127,9 @@ class GoldenCaseResult:
             "citation_id_validity": self.citation_id_validity,
             "invalid_policy_ids": self.invalid_policy_ids,
             "latency_ms": round(self.latency_ms, 2),
+            "retrieval_latency_ms": {
+                name: round(value, 3) for name, value in self.retrieval_latency_ms.items()
+            },
             "scored": self.scored,
             "failed": self.failed,
             "failure_reasons": self.failure_reasons,
@@ -153,7 +158,17 @@ def evaluate_case(
     diagnostic_depth: int = 5,
 ) -> GoldenCaseResult:
     started = time.perf_counter()
-    chunks = retriever.retrieve(case["question"])
+    if hasattr(retriever, "retrieve_with_diagnostics"):
+        diagnostics = retriever.retrieve_with_diagnostics(case["question"])
+        chunks = list(diagnostics.results)
+        samples = sanitise_timing_samples(
+            {name: [value] for name, value in diagnostics.timings_ms.items()},
+            RETRIEVAL_STAGE_NAMES,
+        )
+        component_latency = {name: values[0] for name, values in samples.items()}
+    else:
+        chunks = retriever.retrieve(case["question"])
+        component_latency = {}
     latency_ms = (time.perf_counter() - started) * 1000.0
 
     ranked_sources = [c.source for c in chunks]
@@ -172,6 +187,7 @@ def evaluate_case(
         retrieved_sources=ranked_sources,
         retrieved_policy_ids=retrieved_policy_ids,
         latency_ms=latency_ms,
+        retrieval_latency_ms=component_latency,
         scored=not case.get("should_abstain", False),
         top_results=[
             _summarise(c, rank) for rank, c in enumerate(chunks[:diagnostic_depth], start=1)
@@ -188,7 +204,9 @@ def evaluate_case(
         return result
 
     result.metrics = {
-        **{f"hit_rate_at_{k}": hit_rate_at_k(ranked_sources, expected, k) for k in HIT_RATE_CUTOFFS},
+        **{
+            f"hit_rate_at_{k}": hit_rate_at_k(ranked_sources, expected, k) for k in HIT_RATE_CUTOFFS
+        },
         **{f"recall_at_{k}": recall_at_k(ranked_sources, expected, k) for k in RECALL_CUTOFFS},
         f"mrr_at_{MRR_CUTOFF}": reciprocal_rank_at_k(ranked_sources, expected, MRR_CUTOFF),
     }
@@ -233,7 +251,9 @@ def aggregate(results: list[GoldenCaseResult]) -> dict[str, float]:
     keyword_scores = [r.keyword_recall for r in scored if r.keyword_recall is not None]
     aggregated["keyword_recall"] = _mean(keyword_scores)
 
-    citation_scores = [r.citation_id_validity for r in results if r.citation_id_validity is not None]
+    citation_scores = [
+        r.citation_id_validity for r in results if r.citation_id_validity is not None
+    ]
     aggregated["citation_id_validity"] = _mean(citation_scores)
     return aggregated
 
@@ -267,6 +287,13 @@ def run_golden_evaluation(
     regressions = find_regressions(measured, targets, tolerance)
 
     multi_source = [r for r in scored if len(r.expected_sources) > 1]
+    latency_by_stage = {
+        stage: latency_stats(
+            [r.retrieval_latency_ms[stage] for r in results if stage in r.retrieval_latency_ms]
+        ).to_dict()
+        for stage in RETRIEVAL_STAGE_NAMES
+        if any(stage in r.retrieval_latency_ms for r in results)
+    }
 
     return {
         "report": "golden_baseline",
@@ -322,9 +349,18 @@ def run_golden_evaluation(
             "stage": "retrieval only (BM25 + dense + RRF + deduplication)",
             "excludes": "one-time model loading, warmed before measurement",
             "reranker_applied": False,
+            "by_stage": latency_by_stage,
         },
         "not_measured": NOT_MEASURED_IN_PHASE_D,
         "baseline_comparison": {
+            "role": "diagnostic_only",
+            "canonical_gate_source": "src/evaluation/gates.py :: RETRIEVAL_GATES",
+            "note": (
+                "The canonical merge verdict is produced by "
+                "python -m src.evaluation.run_eval --retrieval --fail-on-regression. "
+                "This historical comparison uses the global baseline tolerance and may be "
+                "less strict than a structural canonical gate."
+            ),
             "targets_source": "src/evaluation/baseline.json :: retrieval_v2",
             "targets": targets,
             "tolerance": tolerance,
@@ -358,23 +394,31 @@ def main() -> int:
     print("\n=== Golden evaluation (MEASURED, deterministic, no LLM) ===")
     dataset = payload["dataset"]
     print(f"dataset : {dataset['version']}")
-    print(f"cases   : {dataset['total_cases']} total, {dataset['scored_cases']} scored, "
-          f"{dataset['abstention_cases_excluded']} abstention case(s) excluded")
-    print(f"corpus  : {payload['corpus']['chunks_indexed']} chunks, "
-          f"{payload['corpus']['documents']} documents\n")
+    print(
+        f"cases   : {dataset['total_cases']} total, {dataset['scored_cases']} scored, "
+        f"{dataset['abstention_cases_excluded']} abstention case(s) excluded"
+    )
+    print(
+        f"corpus  : {payload['corpus']['chunks_indexed']} chunks, "
+        f"{payload['corpus']['documents']} documents\n"
+    )
     for name, value in payload["measured_metrics"].items():
         print(f"  {name:<22} {value:.4f}")
 
     latency = payload["latency"]
-    print(f"\nlatency : mean {latency['mean_ms']:.0f} ms, p50 {latency['p50_ms']:.0f} ms, "
-          f"p95 {latency['p95_ms']:.0f} ms, max {latency['max_ms']:.0f} ms")
+    print(
+        f"\nlatency : mean {latency['mean_ms']:.0f} ms, p50 {latency['p50_ms']:.0f} ms, "
+        f"p95 {latency['p95_ms']:.0f} ms, max {latency['max_ms']:.0f} ms"
+    )
 
     recall = payload["recall_interpretation"]
-    print(f"recall  : {recall['cases_with_multiple_expected_sources']} of "
-          f"{recall['scored_cases']} scored cases expect multiple sources")
+    print(
+        f"recall  : {recall['cases_with_multiple_expected_sources']} of "
+        f"{recall['scored_cases']} scored cases expect multiple sources"
+    )
 
     comparison = payload["baseline_comparison"]
-    print(f"\nregressions vs targets: {comparison['regression_count']}")
+    print(f"\ndiagnostic regressions vs targets: {comparison['regression_count']}")
     for regression in comparison["regressions"]:
         print(f"  {regression['metric']}: {regression['measured']} < {regression['target']}")
 

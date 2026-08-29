@@ -2,6 +2,26 @@
 # secret manager; never commit a populated copy of this file.
 RAGUARD_ENVIRONMENT=production
 RAGUARD_RUNTIME_PROFILE=local_compact
+# The primary model uses auto CUDA when available; the compact profile remains
+# CPU-friendly. Explicitly set cpu or cuda:0 only after benchmarking.
+RERANKER_DEVICE=auto
+RERANKER_BATCH_SIZE=0
+RERANKER_MAX_CONCURRENCY=1
+RERANKER_CPU_THREADS=0
+RERANKER_WARMUP_INFERENCE=true
+# Keep policy chunks local by default. To use Voyage, set both
+# RERANKER_PROVIDER=voyage and RERANKER_REMOTE_ALLOWED=true, then place
+# VOYAGE_API_KEY only in the deployment secret manager.
+RERANKER_PROVIDER=local
+RERANKER_REMOTE_ALLOWED=false
+# VOYAGE_API_KEY=replace-in-secret-manager
+VOYAGE_RERANK_MODEL=rerank-2.5-lite
+HOSTED_RERANK_TIMEOUT_SECONDS=3
+HOSTED_RERANK_MAX_RETRIES=1
+HOSTED_RERANK_TOP_K=5
+HOSTED_RERANK_MAX_CANDIDATES=20
+RERANKER_FALLBACK_PROVIDER=local
+RERANKER_CONFIDENCE_PROFILE=unverified
 API_HOST=0.0.0.0
 API_BASE_URL=https://api.example.com
 CORS_ALLOW_ORIGINS=https://app.example.com
@@ -9,12 +29,23 @@ CORS_ALLOW_ORIGINS=https://app.example.com
 DATABASE_URL=postgresql://user:password@host/database?sslmode=require
 GRAPH_REQUEST_TIMEOUT_S=150
 GRAPH_LLM_CALL_LIMIT=8
+LLM_EXECUTION_PROFILE=baseline
 DB_POOL_TIMEOUT_S=10
 DB_CONNECT_TIMEOUT_S=10
 DB_RECONNECT_TIMEOUT_S=30
 
 LLM_PROVIDER=gemini
+# static is backward-compatible. dynamic routes normal requests to Gemini and
+# evaluation/strict structured requests to Groq when configured.
+LLM_ROUTING_MODE=static
+LLM_ROUTING_LOCAL_ONLY=false
+LLM_ROUTING_STRICT_STRUCTURED_OUTPUT=false
 GOOGLE_API_KEY=replace-in-secret-manager
+# For an explicit Groq pilot instead, set LLM_PROVIDER=groq and place
+# GROQ_API_KEY in the secret manager. Do not set both keys in this file.
+GROQ_MODEL=openai/gpt-oss-20b
+GROQ_JUDGE_MODEL=openai/gpt-oss-20b
+GROQ_MAX_RETRIES=2
 ADMIN_API_KEY=replace-with-at-least-32-random-characters
 
 ADMISSION_BACKEND=redis

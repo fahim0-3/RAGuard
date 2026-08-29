@@ -97,18 +97,20 @@ class EntailmentVerdict(BaseModel):
 def build_entailment_chain(
     *, timeout_s: float | None = None, max_retries: int | None = None
 ) -> Any:
-    from langchain_core.output_parsers import JsonOutputParser
     from langchain_core.prompts import ChatPromptTemplate
 
-    from src.generation.llm_factory import get_chat_model
+    from src.generation.llm_factory import build_json_chain
+    from src.generation.structured_schemas import ENTAILMENT_SCHEMA
 
     prompt = ChatPromptTemplate.from_messages(
         [("system", ENTAILMENT_SYSTEM_PROMPT), ("human", ENTAILMENT_HUMAN_PROMPT)]
     ).partial(output_schema=ENTAILMENT_OUTPUT_SCHEMA)
-    return (
-        prompt
-        | get_chat_model("judge", timeout_s=timeout_s, max_retries=max_retries)
-        | JsonOutputParser()
+    return build_json_chain(
+        prompt,
+        "judge",
+        ENTAILMENT_SCHEMA,
+        timeout_s=timeout_s,
+        max_retries=max_retries,
     )
 
 
@@ -133,14 +135,10 @@ def judge_claim(
     permit = reserve_llm_call(
         "verify_citations",
         default_timeout_s=(
-            llm_timeout_s
-            if llm_timeout_s is not None
-            else settings.llm_request_timeout_s
+            llm_timeout_s if llm_timeout_s is not None else settings.llm_request_timeout_s
         ),
         default_max_retries=(
-            llm_max_retries
-            if llm_max_retries is not None
-            else settings.llm_max_retries
+            llm_max_retries if llm_max_retries is not None else settings.llm_max_retries
         ),
     )
     try:

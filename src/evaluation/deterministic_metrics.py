@@ -156,14 +156,10 @@ def structured_output_validity(
 # --------------------------------------------------------------------------
 
 
-def expected_outcome_accuracy(
-    predicted: Sequence[str], expected: Sequence[str]
-) -> float:
+def expected_outcome_accuracy(predicted: Sequence[str], expected: Sequence[str]) -> float:
     """Fraction of cases whose outcome matched the golden expectation."""
     if len(predicted) != len(expected):
-        raise ValueError(
-            f"predicted and expected must align: {len(predicted)} vs {len(expected)}"
-        )
+        raise ValueError(f"predicted and expected must align: {len(predicted)} vs {len(expected)}")
     if not expected:
         return 0.0
     return sum(1 for p, e in zip(predicted, expected, strict=True) if p == e) / len(expected)

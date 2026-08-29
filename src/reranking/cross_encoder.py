@@ -43,6 +43,7 @@ import inspect
 import logging
 import math
 import threading
+import time
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
@@ -88,17 +89,58 @@ class RerankResult:
     fallback_model_used: bool = False
     failure: str | None = None
     failure_stage: str | None = None
+    queue_wait_ms: float = 0.0
+    inference_latency_ms: float = 0.0
+    # BGE scoring is distinct from hosted ordering in the hybrid Voyage path.
+    # For local-only reranking these mirror the full inference measurements.
+    bge_scoring_latency_ms: float = 0.0
+    bge_scoring_cpu_time_ms: float = 0.0
+    total_reranker_latency_ms: float = 0.0
+    # Provider observability is deliberately metadata-only: it contains no
+    # query or passage text and never includes credentials.
+    requested_provider: str = "local"
+    actual_provider: str = "local"
+    fallback_used: bool = False
+    hosted_latency_ms: float = 0.0
+    retry_count: int = 0
+    # Hosted relevance scores are retained separately for offline calibration.
+    # They are never written into RetrievedChunk's BGE-specific score fields.
+    provider_raw_scores: dict[int, float] = field(default_factory=dict)
+    provider_order: list[int] = field(default_factory=list)
+    confidence_score_source: str = "bge_sigmoid"
+
+    def observability_dict(self) -> dict[str, Any]:
+        """Safe operational metadata: never query text, chunks, or credentials."""
+        return {
+            "requested_provider": self.requested_provider,
+            "actual_provider": self.actual_provider,
+            "fallback_used": self.fallback_used,
+            "candidate_count": self.candidate_count,
+            "returned_count": len(self.chunks),
+            "reranker_used": self.reranker_used,
+            "model_name": self.model_name,
+            "hosted_latency_ms": round(self.hosted_latency_ms, 1),
+            "reranking_latency_ms": round(
+                self.total_reranker_latency_ms
+                or (self.hosted_latency_ms + self.queue_wait_ms + self.inference_latency_ms),
+                1,
+            ),
+            "inference_latency_ms": round(self.inference_latency_ms, 1),
+            "bge_scoring_latency_ms": round(self.bge_scoring_latency_ms, 1),
+            "bge_scoring_cpu_time_ms": round(self.bge_scoring_cpu_time_ms, 1),
+            "queue_wait_ms": round(self.queue_wait_ms, 1),
+            "retry_count": self.retry_count,
+            "failure": self.failure,
+            "failure_stage": self.failure_stage,
+            "confidence_score_source": self.confidence_score_source,
+        }
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "query": self.query,
-            "reranker_used": self.reranker_used,
-            "model_name": self.model_name,
-            "candidate_count": self.candidate_count,
-            "returned_count": len(self.chunks),
+            **self.observability_dict(),
             "fallback_model_used": self.fallback_model_used,
-            "failure": self.failure,
-            "failure_stage": self.failure_stage,
+            "provider_score_count": len(self.provider_raw_scores),
         }
 
 
@@ -110,16 +152,28 @@ class CrossEncoderReranker:
         model_name: str | None = None,
         fallback_model_name: str | None = None,
         device: str | None = None,
+        batch_size: int | None = None,
         enabled: bool | None = None,
         model: Any | None = None,
     ) -> None:
         settings = get_settings()
         self.model_name = model_name or settings.resolved_reranker_model
         self.fallback_model_name = fallback_model_name or settings.reranker_fallback_model
-        self.device = device or settings.resolved_reranker_device
+        requested_device = device or settings.reranker_device.strip() or settings.model_device
+        self.requested_device = requested_device.lower()
+        self.device = (
+            settings.resolved_reranker_device
+            if self.requested_device == "auto"
+            else requested_device
+        )
+        self._preferred_device = self.device
         self.enabled = settings.reranker_enabled if enabled is None else enabled
-        self.batch_size = settings.reranker_batch_size
+        configured_batch_size = batch_size or settings.reranker_batch_size
+        self.batch_size = configured_batch_size or (32 if self.device.startswith("cuda") else 16)
         self.max_length = settings.reranker_max_length
+        self.max_concurrency = settings.reranker_max_concurrency
+        self.cpu_threads = settings.reranker_cpu_threads
+        self.warmup_inference = settings.reranker_warmup_inference
 
         self._model: Any | None = model
         self._loaded_model_name: str | None = self.model_name if model is not None else None
@@ -127,6 +181,7 @@ class CrossEncoderReranker:
         self._load_error: str | None = None
         self._activation_parameter: str | None = None
         self._lock = threading.Lock()
+        self._inference_limiter = threading.BoundedSemaphore(self.max_concurrency)
 
     # -- model loading -----------------------------------------------------
 
@@ -136,6 +191,28 @@ class CrossEncoderReranker:
 
         logger.info("Loading cross-encoder %s on %s", model_name, self.device)
         return CrossEncoder(model_name, device=self.device, max_length=self.max_length)
+
+    def _configure_cpu_threads(self) -> None:
+        """Apply an explicit CPU-thread ceiling only when an operator chose one."""
+        if not self.device.startswith("cpu") or not self.cpu_threads:
+            return
+        try:
+            import torch
+
+            torch.set_num_threads(self.cpu_threads)
+        except ImportError:  # pragma: no cover - CrossEncoder requires torch in production
+            logger.warning("RERANKER_CPU_THREADS ignored because PyTorch is unavailable")
+
+    def _load_on_device(self, model_name: str, device: str) -> Any:
+        self.device = device
+        self._configure_cpu_threads()
+        return self._load(model_name)
+
+    def _candidate_devices(self) -> tuple[str, ...]:
+        """Use CPU only as the bounded fallback for an automatic CUDA choice."""
+        if self.requested_device == "auto" and self._preferred_device.startswith("cuda"):
+            return (self._preferred_device, "cpu")
+        return (self._preferred_device,)
 
     def _get_model(self) -> Any | None:
         """Return the model, or None if it cannot be loaded.
@@ -157,20 +234,29 @@ class CrossEncoderReranker:
             ):
                 if not candidate or (is_fallback and candidate == self.model_name):
                     continue
-                try:
-                    self._model = self._load(candidate)
-                    self._loaded_model_name = candidate
-                    self._load_error = None
-                    if is_fallback:
-                        logger.warning(
-                            "Primary reranker %s unavailable; using fallback %s",
-                            self.model_name,
-                            candidate,
+                candidate_devices = self._candidate_devices()
+                for device in candidate_devices:
+                    try:
+                        self._model = self._load_on_device(candidate, device)
+                        self._loaded_model_name = candidate
+                        self._load_error = None
+                        if device != candidate_devices[0]:
+                            logger.warning(
+                                "Cross-encoder CUDA initialization failed; using CPU fallback for %s",
+                                candidate,
+                            )
+                        if is_fallback:
+                            logger.warning(
+                                "Primary reranker %s unavailable; using fallback %s",
+                                self.model_name,
+                                candidate,
+                            )
+                        return self._model
+                    except Exception as exc:  # noqa: BLE001 - any load failure degrades to RRF
+                        self._load_error = f"{type(exc).__name__}: {exc}"
+                        logger.error(
+                            "Cross-encoder %s failed to load on %s: %s", candidate, device, exc
                         )
-                    return self._model
-                except Exception as exc:  # noqa: BLE001 - any load failure degrades to RRF
-                    self._load_error = f"{type(exc).__name__}: {exc}"
-                    logger.error("Cross-encoder %s failed to load: %s", candidate, exc)
 
             logger.error("No cross-encoder could be loaded; retrieval falls back to RRF order")
             return None
@@ -221,10 +307,95 @@ class CrossEncoderReranker:
         return self._loaded_model_name
 
     def warmup(self) -> bool:
-        """Load weights off the request path without allowing an exception out."""
+        """Load weights and initialize one synthetic inference off the request path."""
         if not self.enabled:
             return True
-        return self._get_model() is not None
+        model = self._get_model()
+        if model is None:
+            return False
+        if self.warmup_inference and hasattr(model, "predict"):
+            try:
+                self._predict(model, [("warmup", "warmup")])
+            except Exception as exc:  # noqa: BLE001 - loaded weights remain usable
+                logger.warning("Reranker inference warm-up failed: %s", type(exc).__name__)
+        return True
+
+    def score_fixed_order_with_diagnostics(
+        self, query: str, chunks: list[RetrievedChunk]
+    ) -> RerankResult:
+        """Score an already-ranked evidence set without changing its order.
+
+        The Voyage hybrid path uses this method after hosted ordering.  It
+        supplies the existing BGE-compatible confidence values for every final
+        evidence chunk while deliberately preserving Voyage's top-five order.
+        Exactly one `predict` call is made for the complete supplied list.
+        """
+
+        candidates = list(chunks)
+
+        def degraded(failure: str | None, stage: str | None) -> RerankResult:
+            return RerankResult(
+                query=query,
+                chunks=candidates,
+                reranker_used=False,
+                model_name=self._loaded_model_name,
+                candidate_count=len(candidates),
+                failure=failure,
+                failure_stage=stage,
+                confidence_score_source="none",
+            )
+
+        if not candidates:
+            return degraded(None, None)
+        if not self.enabled:
+            return degraded("reranker disabled by configuration", "disabled")
+
+        model = self._get_model()
+        if model is None:
+            return degraded(self._load_error or "model unavailable", "load")
+
+        queued_at = time.perf_counter()
+        inference_started = queued_at
+        cpu_started = time.process_time()
+        try:
+            with self._inference_limiter:
+                inference_started = time.perf_counter()
+                cpu_started = time.process_time()
+                scores = self._predict(model, [(query, chunk.content) for chunk in candidates])
+                inference_latency_ms = (time.perf_counter() - inference_started) * 1000.0
+                cpu_time_ms = (time.process_time() - cpu_started) * 1000.0
+        except Exception as exc:  # noqa: BLE001 - scoring must fail closed
+            logger.error("Cross-encoder fixed-order scoring failed: %s", exc)
+            return degraded(f"{type(exc).__name__}: {exc}", "inference")
+        queue_wait_ms = (inference_started - queued_at) * 1000.0
+
+        if len(scores) != len(candidates):
+            message = f"model returned {len(scores)} scores for {len(candidates)} candidates"
+            logger.error("Cross-encoder contract violated: %s", message)
+            return degraded(message, "inference")
+
+        # Do not sort.  BGE is a confidence scorer here, not a second reranker.
+        scored = [
+            replace(chunk, rerank_score=score, normalised_rerank_score=sigmoid(score))
+            for chunk, score in zip(candidates, scores, strict=True)
+        ]
+        return RerankResult(
+            query=query,
+            chunks=scored,
+            reranker_used=True,
+            model_name=self._loaded_model_name,
+            candidate_count=len(candidates),
+            fallback_model_used=self._loaded_model_name != self.model_name,
+            queue_wait_ms=queue_wait_ms,
+            inference_latency_ms=inference_latency_ms,
+            bge_scoring_latency_ms=inference_latency_ms,
+            bge_scoring_cpu_time_ms=cpu_time_ms,
+            total_reranker_latency_ms=queue_wait_ms + inference_latency_ms,
+            provider_raw_scores={
+                chunk.chunk_id: score for chunk, score in zip(candidates, scores, strict=True)
+            },
+            provider_order=[chunk.chunk_id for chunk in candidates],
+        )
 
     def rerank_with_diagnostics(
         self,
@@ -260,11 +431,20 @@ class CrossEncoderReranker:
         if model is None:
             return degraded(self._load_error or "model unavailable", "load")
 
+        queued_at = time.perf_counter()
+        inference_started = queued_at
+        cpu_started = time.process_time()
         try:
-            scores = self._predict(model, [(query, chunk.content) for chunk in candidates])
+            with self._inference_limiter:
+                inference_started = time.perf_counter()
+                cpu_started = time.process_time()
+                scores = self._predict(model, [(query, chunk.content) for chunk in candidates])
+                inference_latency_ms = (time.perf_counter() - inference_started) * 1000.0
+                cpu_time_ms = (time.process_time() - cpu_started) * 1000.0
         except Exception as exc:  # noqa: BLE001 - inference failure degrades to RRF
             logger.error("Cross-encoder inference failed: %s", exc)
             return degraded(f"{type(exc).__name__}: {exc}", "inference")
+        queue_wait_ms = (inference_started - queued_at) * 1000.0
 
         if len(scores) != len(candidates):
             message = f"model returned {len(scores)} scores for {len(candidates)} candidates"
@@ -287,6 +467,15 @@ class CrossEncoderReranker:
             model_name=self._loaded_model_name,
             candidate_count=len(candidates),
             fallback_model_used=self._loaded_model_name != self.model_name,
+            queue_wait_ms=queue_wait_ms,
+            inference_latency_ms=inference_latency_ms,
+            bge_scoring_latency_ms=inference_latency_ms,
+            bge_scoring_cpu_time_ms=cpu_time_ms,
+            total_reranker_latency_ms=queue_wait_ms + inference_latency_ms,
+            provider_raw_scores={
+                chunk.chunk_id: score for chunk, score in zip(candidates, scores, strict=True)
+            },
+            provider_order=[chunk.chunk_id for chunk in scored[:top_k]],
         )
 
     def rerank(
@@ -305,10 +494,14 @@ class CrossEncoderReranker:
             "loaded_model": self._loaded_model_name,
             "load_error": self._load_error,
             "device": self.device,
+            "requested_device": self.requested_device,
             "candidate_top_k": settings.rerank_candidate_top_k,
             "final_top_k": settings.rerank_top_k,
             "batch_size": self.batch_size,
             "max_length": self.max_length,
+            "max_concurrency": self.max_concurrency,
+            "cpu_threads": self.cpu_threads or None,
+            "warmup_inference": self.warmup_inference,
             "input_pair": "(original query, candidate chunk content)",
             "score_normalisation": "sigmoid over raw logits, computed in RAGuard",
             "activation_parameter": self._activation_parameter or None,
@@ -324,16 +517,23 @@ class CrossEncoderReranker:
         }
 
 
-_reranker: CrossEncoderReranker | None = None
+_reranker: Any | None = None
 _lock = threading.Lock()
 
 
-def get_reranker() -> CrossEncoderReranker:
+def get_reranker() -> Any:
+    """Return the explicit configured provider without auto-routing.
+
+    The import is intentionally local to avoid a module cycle: the provider
+    adapter reuses ``CrossEncoderReranker`` as its lazy local implementation.
+    """
     global _reranker
     if _reranker is None:
         with _lock:
             if _reranker is None:
-                _reranker = CrossEncoderReranker()
+                from src.reranking.provider import ConfiguredReranker
+
+                _reranker = ConfiguredReranker()
     return _reranker
 
 

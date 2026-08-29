@@ -113,7 +113,7 @@ AMBIGUITY_RULES: tuple[AmbiguityRule, ...] = (
     AmbiguityRule(
         name="bare_it_reference",
         subject=re.compile(
-            r"^\s*(can i (send|give|take) (it|this) back|"
+            r"^\s*(can i (send|give|take) (it|this) back|can i return (it|this)|"
             r"i want to (send|give) (it|this) back|"
             r"what about (it|this))\b",
             re.IGNORECASE,

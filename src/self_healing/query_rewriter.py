@@ -15,17 +15,18 @@ from __future__ import annotations
 import logging
 import re
 
-from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
 from src.config import get_settings
-from src.generation.llm_provider import get_chat_model
+from src.generation.llm_factory import build_json_chain
 from src.generation.prompts import (
     QUERY_REWRITE_HUMAN_PROMPT,
     QUERY_REWRITE_SYSTEM_PROMPT,
     REWRITE_OUTPUT_SCHEMA,
 )
+from src.generation.structured_schemas import REWRITE_SCHEMA
 from src.retrieval.types import RetrievedChunk
+from src.self_healing.abstention import customer_missing_information
 
 logger = logging.getLogger(__name__)
 
@@ -80,16 +81,16 @@ def heuristic_rewrites(question: str, n_variants: int) -> list[str]:
     return deduped[:n_variants]
 
 
-def _build_rewrite_chain(
-    *, timeout_s: float | None = None, max_retries: int | None = None
-):
+def _build_rewrite_chain(*, timeout_s: float | None = None, max_retries: int | None = None):
     prompt = ChatPromptTemplate.from_messages(
         [("system", QUERY_REWRITE_SYSTEM_PROMPT), ("human", QUERY_REWRITE_HUMAN_PROMPT)]
     ).partial(output_schema=REWRITE_OUTPUT_SCHEMA)
-    return (
-        prompt
-        | get_chat_model("rewriter", timeout_s=timeout_s, max_retries=max_retries)
-        | JsonOutputParser()
+    return build_json_chain(
+        prompt,
+        "rewriter",
+        REWRITE_SCHEMA,
+        timeout_s=timeout_s,
+        max_retries=max_retries,
     )
 
 
@@ -122,9 +123,7 @@ def rewrite_query(
         chain = (
             _build_rewrite_chain()
             if llm_timeout_s is None and llm_max_retries is None
-            else _build_rewrite_chain(
-                timeout_s=llm_timeout_s, max_retries=llm_max_retries
-            )
+            else _build_rewrite_chain(timeout_s=llm_timeout_s, max_retries=llm_max_retries)
         )
         raw = chain.invoke(
             {
@@ -158,9 +157,7 @@ def rewrite_query(
 #: opposite of what a retry is for.
 _ORDER_ID_PATTERN = re.compile(r"\b(?:ORD|ORDER|INV|#)[-_ ]?\d{4,}\b", re.IGNORECASE)
 _QUOTED_PATTERN = re.compile(r"[\"“”']([^\"“”']{2,80})[\"“”']")
-_PRODUCT_PATTERN = re.compile(
-    r"\b(?:AuraBrew\s*\w*|AB-X200-EU|X200)\b", re.IGNORECASE
-)
+_PRODUCT_PATTERN = re.compile(r"\b(?:AuraBrew\s*\w*|AB-X200-EU|X200)\b", re.IGNORECASE)
 
 _GENERIC_MISSING_HINTS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bgrader judged the passages incomplete\b", re.IGNORECASE),
@@ -209,7 +206,7 @@ def _restore_protected(original: str, rewritten: str) -> str:
 def _useful_missing_information(missing_information: list[str] | None) -> list[str]:
     """Keep corpus-facing hints and drop generic internal grader wording."""
     useful: list[str] = []
-    for item in missing_information or []:
+    for item in customer_missing_information(missing_information):
         text = " ".join(str(item).split())
         if not text:
             continue

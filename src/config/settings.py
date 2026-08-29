@@ -49,8 +49,18 @@ class Settings(BaseSettings):
     )
 
     # --- LLM provider ---
-    llm_provider: Literal["gemini", "ollama"] = "gemini"
+    llm_provider: Literal["gemini", "groq", "ollama"] = "gemini"
+    # `static` preserves the historical LLM_PROVIDER-only selection. Dynamic
+    # routing chooses once per graph using explicit workload/privacy settings.
+    llm_routing_mode: Literal["static", "dynamic"] = "static"
+    # Dynamic mode only: keeps all model calls local and deliberately prevents
+    # a hosted fallback from sending private data outside the deployment.
+    llm_routing_local_only: bool = False
+    # Dynamic mode only: select Groq at graph entry for an explicitly strict
+    # structured-output workload. Evaluation sets the same preference itself.
+    llm_routing_strict_structured_output: bool = False
     google_api_key: str | None = None
+    groq_api_key: str | None = Field(default=None, repr=False)
     # Verified against a live key on 2026-08-16. The previous defaults
     # (gemini-2.5-flash / gemini-2.5-flash-lite) now return 404 "no longer
     # available to new users", so the system could not generate out of the box.
@@ -66,6 +76,14 @@ class Settings(BaseSettings):
     # change, which defeats reproducible evaluation. Rebaseline deliberately
     # whenever this explicit model ID changes.
     gemini_judge_model: str = "gemini-3.5-flash-lite"
+    # Groq is optional. Its default model supports strict JSON-schema output,
+    # which is used by every structured LLM step in the self-healing graph.
+    groq_model: str = "openai/gpt-oss-20b"
+    groq_judge_model: str = "openai/gpt-oss-20b"
+    # ChatGroq retries transient 429/5xx responses with exponential backoff.
+    # An active graph budget passes zero, so hidden retries never exceed the
+    # request-level call allowance.
+    groq_max_retries: int = Field(default=2, ge=0, le=5)
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b"
     # Provider-agnostic model override. Empty means "use the provider default",
@@ -91,10 +109,29 @@ class Settings(BaseSettings):
     # against the primary's 568 M, so it stays usable on CPU-only machines.
     reranker_fallback_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     model_device: str = "cpu"
-    # Empty inherits MODEL_DEVICE. Keeping the reranker separate lets an API
-    # process retain embeddings on CPU while benchmarking the cross-encoder on
-    # an available GPU with its own memory budget.
-    reranker_device: str = ""
+    # `auto` prefers CUDA when the installed PyTorch runtime exposes it and
+    # otherwise stays on CPU. Keeping this separate lets embeddings remain on
+    # CPU while the cross-encoder uses an available GPU. Set an explicit value
+    # such as `cpu` or `cuda:0` to override detection.
+    reranker_device: str = "auto"
+
+    # --- Hosted reranker (explicit opt-in only) ---
+    # `local` is the privacy-preserving default.  There is intentionally no
+    # automatic provider selection: setting an API key must never by itself
+    # cause policy passages to leave this deployment.
+    reranker_provider: Literal["local", "voyage"] = "local"
+    reranker_remote_allowed: bool = False
+    voyage_api_key: str | None = Field(default=None, repr=False)
+    voyage_rerank_model: str = "rerank-2.5-lite"
+    hosted_rerank_timeout_seconds: float = Field(default=3.0, ge=0.1, le=60.0)
+    hosted_rerank_max_retries: int = Field(default=1, ge=0, le=5)
+    hosted_rerank_top_k: int = Field(default=5, ge=1, le=1000)
+    hosted_rerank_max_candidates: int = Field(default=20, ge=1, le=1000)
+    # A named, evaluated mapping from a provider's scores to RAGuard's
+    # confidence thresholds. `unverified` means hosted scores may order chunks
+    # but can never be placed in `normalised_rerank_score`.
+    reranker_confidence_profile: str = "unverified"
+    reranker_fallback_provider: Literal["local", "rrf"] = "local"
 
     # --- Ingestion ---
     data_dir: Path = Path("data/policies")
@@ -116,8 +153,20 @@ class Settings(BaseSettings):
     reranker_enabled: bool = True
     # Candidates handed to the cross-encoder. Cost is linear in this number.
     rerank_candidate_top_k: int = Field(default=20, ge=1)
-    reranker_batch_size: int = Field(default=16, ge=1)
+    # Zero selects a device-aware default: 32 on CUDA, 16 on CPU. An explicit
+    # positive value remains an operator override for capacity tuning.
+    reranker_batch_size: int = Field(default=0, ge=0)
     reranker_max_length: int = Field(default=512, ge=64)
+    # A single resident cross-encoder is deliberately not driven concurrently
+    # by default: this avoids GPU memory spikes and CPU thread oversubscription
+    # under the API's multi-query admission limit. It never changes ranking.
+    reranker_max_concurrency: int = Field(default=1, ge=1, le=16)
+    # Zero leaves PyTorch's process-wide thread setting unchanged. Set a
+    # positive value only after a CPU benchmark on the target host.
+    reranker_cpu_threads: int = Field(default=0, ge=0, le=128)
+    # Execute one synthetic pair during background warm-up so tokenizer and
+    # kernel initialization do not inflate the first real query.
+    reranker_warmup_inference: bool = True
 
     # --- Deduplication ---
     dedup_enabled: bool = True
@@ -149,6 +198,10 @@ class Settings(BaseSettings):
     # generation, verification, and every graph retry.
     graph_request_timeout_s: int = Field(default=150, ge=5, le=3_600)
     graph_llm_call_limit: int = Field(default=8, ge=1, le=100)
+    # The baseline preserves the eight-call evaluation contract. The free
+    # hosted pilot profile deliberately caps an individual graph at four calls
+    # without changing its topology or retry configuration.
+    llm_execution_profile: Literal["baseline", "free_hosted_pilot"] = "baseline"
 
     # --- Citation verification (Phase G) ---
     # "entailment" adds semantic checking; "deterministic" keeps the Phase F
@@ -186,10 +239,8 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _request_budget_fits_admission_lease(self) -> Settings:
         if self.graph_request_timeout_s >= self.admission_lease_seconds:
-            raise ValueError(
-                "graph_request_timeout_s must be lower than admission_lease_seconds"
-            )
-        if self.embedding_provider == "gemini":
+            raise ValueError("graph_request_timeout_s must be lower than admission_lease_seconds")
+        if self.embedding_provider == "gemini" and self.reranker_provider == "local":
             # Hosted embeddings remove the local sentence-transformers stack.
             # Keep reranking hosted-only as well rather than silently pulling a
             # cross-encoder into a supposedly model-free runtime.
@@ -221,8 +272,22 @@ class Settings(BaseSettings):
 
     @property
     def resolved_reranker_device(self) -> str:
-        """Configured cross-encoder device, falling back to MODEL_DEVICE."""
-        return self.reranker_device.strip() or self.model_device
+        """Resolve the cross-encoder device without requiring CUDA at import time."""
+        requested = self.reranker_device.strip().lower()
+        if requested != "auto":
+            return requested or self.model_device
+        try:
+            import torch
+        except ImportError:
+            return "cpu"
+        return "cuda" if torch.cuda.is_available() else "cpu"
+
+    @property
+    def resolved_reranker_batch_size(self) -> int:
+        """Return the explicit batch size or a conservative device-aware default."""
+        if self.reranker_batch_size:
+            return self.reranker_batch_size
+        return 32 if self.resolved_reranker_device.startswith("cuda") else 16
 
     @property
     def resolved_reranker_model(self) -> str:
@@ -230,6 +295,13 @@ class Settings(BaseSettings):
         if self.runtime_profile == "local_compact":
             return self.reranker_fallback_model
         return self.reranker_model
+
+    @property
+    def effective_graph_llm_call_limit(self) -> int:
+        """Provider-call allowance selected by the explicit execution profile."""
+        if self.llm_execution_profile == "free_hosted_pilot":
+            return min(self.graph_llm_call_limit, 4)
+        return self.graph_llm_call_limit
 
 
 @lru_cache(maxsize=1)

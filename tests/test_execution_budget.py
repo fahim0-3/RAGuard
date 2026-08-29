@@ -113,9 +113,7 @@ def test_entailment_reserves_one_budgeted_call_per_claim():
     ]
     budget = ExecutionBudget(timeout_s=120, max_llm_calls=1)
 
-    with request_budget(budget), pytest.raises(
-        ExecutionBudgetExceeded, match="llm_call_limit"
-    ):
+    with request_budget(budget), pytest.raises(ExecutionBudgetExceeded, match="llm_call_limit"):
         EntailmentVerifier(chain=Judge(), use_llm=True).verify(
             " ".join(claims),
             [label],

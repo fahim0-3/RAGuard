@@ -234,7 +234,12 @@ def test_injection_questions_have_no_supporting_evidence_in_the_corpus(case):
         p.read_text(encoding="utf-8").lower()
         for p in (PROJECT_ROOT / "data" / "policies").glob("*.txt")
     )
-    for phrase in ("developer mode", "ignore all previous", "system prompt", "policy checks disabled"):
+    for phrase in (
+        "developer mode",
+        "ignore all previous",
+        "system prompt",
+        "policy checks disabled",
+    ):
         assert phrase not in corpus, (
             f"{case['id']}: corpus contains {phrase!r}, so an injection could be "
             f"answered from retrieved text"

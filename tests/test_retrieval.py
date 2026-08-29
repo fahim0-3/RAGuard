@@ -248,6 +248,39 @@ def test_metric_primitives():
     assert hit_rate_at_k(ranked, set(), 5) == 0.0
 
 
+def test_hybrid_diagnostics_capture_component_latency(monkeypatch):
+    """Profiling must not change ranking and must expose only fixed numeric stages."""
+    from src.retrieval import hybrid as hybrid_module
+
+    dense = make_chunk(1, dense_score=0.9)
+    sparse = make_chunk(
+        2,
+        content="A damaged appliance can use the replacement route.",
+        sparse_score=4.0,
+    )
+
+    class StubBm25:
+        def search(self, query, top_k):
+            return [sparse]
+
+    monkeypatch.setattr(hybrid_module, "embed_query", lambda query: [0.0] * 1024)
+    monkeypatch.setattr(hybrid_module, "dense_search", lambda embedding, top_k: [dense])
+    monkeypatch.setattr(hybrid_module, "get_bm25_index", lambda: StubBm25())
+
+    diagnostics = hybrid_module.HybridRetriever().retrieve_with_diagnostics("refund timing")
+
+    assert {chunk.chunk_id for chunk in diagnostics.results} == {1, 2}
+    assert set(diagnostics.timings_ms) == {
+        "query_embedding",
+        "vector_search",
+        "bm25_search",
+        "rrf_fusion",
+        "deduplication",
+    }
+    assert all(value >= 0.0 for value in diagnostics.timings_ms.values())
+    assert diagnostics.to_dict()["timings_ms"] == diagnostics.timings_ms
+
+
 # ---------------------------------------------------------------------------
 # Integration
 # ---------------------------------------------------------------------------
@@ -312,8 +345,14 @@ def test_baseline_evaluation_produces_metrics():
     payload = evaluate_retrieval_baseline()
 
     assert payload["dataset"]["scored_cases"] > 0
-    for name in ("hit_rate_at_1", "hit_rate_at_3", "hit_rate_at_5",
-                 "recall_at_5", "recall_at_10", "mrr_at_5"):
+    for name in (
+        "hit_rate_at_1",
+        "hit_rate_at_3",
+        "hit_rate_at_5",
+        "recall_at_5",
+        "recall_at_10",
+        "mrr_at_5",
+    ):
         assert name in payload["measured_metrics"], f"missing metric {name}"
         assert 0.0 <= payload["measured_metrics"][name] <= 1.0
     assert payload["configuration"]["rrf"]["k"] == 60

@@ -146,8 +146,7 @@ def score_case(
         retrieved_policy_ids=[c.policy_id for c in chunks],
         first_relevant_rank=first_relevant_rank(ranked_sources, expected),
         top_results=[
-            _summarise(chunk, rank)
-            for rank, chunk in enumerate(chunks[:diagnostic_depth], start=1)
+            _summarise(chunk, rank) for rank, chunk in enumerate(chunks[:diagnostic_depth], start=1)
         ],
         reranker_used=reranker_used,
         failure=failure,
@@ -159,8 +158,7 @@ def score_case(
 
     result.metrics = {
         **{
-            f"hit_rate_at_{k}": hit_rate_at_k(ranked_sources, expected, k)
-            for k in HIT_RATE_CUTOFFS
+            f"hit_rate_at_{k}": hit_rate_at_k(ranked_sources, expected, k) for k in HIT_RATE_CUTOFFS
         },
         f"recall_at_{RECALL_CUTOFF}": recall_at_k(ranked_sources, expected, RECALL_CUTOFF),
         f"mrr_at_{MRR_CUTOFF}": reciprocal_rank_at_k(ranked_sources, expected, MRR_CUTOFF),
@@ -223,9 +221,7 @@ def run_comparison(
 
         # D. C's candidates, rescored. Never raises: a reranker failure degrades
         # to the RRF order and is recorded rather than aborting the run.
-        reranked = reranker.rerank_with_diagnostics(
-            question, fused, top_k=settings.rerank_top_k
-        )
+        reranked = reranker.rerank_with_diagnostics(question, fused, top_k=settings.rerank_top_k)
         results[CONFIG_D].append(
             score_case(
                 CONFIG_D,
@@ -340,9 +336,7 @@ def build_watched_cases(
     results: dict[str, list[ConfigCaseResult]], cases_by_id: dict[str, dict]
 ) -> dict[str, Any]:
     """Explicit before/after for the cases Phase B could not rank first."""
-    by_config_case = {
-        config: {r.case_id: r for r in results[config]} for config in CONFIG_ORDER
-    }
+    by_config_case = {config: {r.case_id: r for r in results[config]} for config in CONFIG_ORDER}
     watched: dict[str, Any] = {}
     for case_id in WATCHED_CASES:
         if case_id not in cases_by_id:
@@ -510,34 +504,45 @@ def main() -> int:
 
     print("\n=== Retrieval configuration comparison (no LLM) ===")
     print(f"dataset : {payload['dataset']['version']}")
-    print(f"cases   : {payload['dataset']['scored_cases']} scored, "
-          f"{payload['dataset']['abstention_cases_excluded']} abstention case(s) excluded")
-    print(f"model   : {payload['model']['loaded']} "
-          f"(reranker_used={payload['reranker_used']})\n")
+    print(
+        f"cases   : {payload['dataset']['scored_cases']} scored, "
+        f"{payload['dataset']['abstention_cases_excluded']} abstention case(s) excluded"
+    )
+    print(f"model   : {payload['model']['loaded']} (reranker_used={payload['reranker_used']})\n")
     _print_table(payload)
 
     print("\n--- watched cases ---")
     for case_id, watched in payload["watched_cases"].items():
-        print(f"{case_id}: rank {watched['before']['first_relevant_rank']} -> "
-              f"{watched['after']['first_relevant_rank']}  ({watched['rank_change']})")
+        print(
+            f"{case_id}: rank {watched['before']['first_relevant_rank']} -> "
+            f"{watched['after']['first_relevant_rank']}  ({watched['rank_change']})"
+        )
 
     verdict = payload["verdict"]
     print("\n--- verdict ---")
-    print(f"MRR@5      {verdict['mrr_at_5_before']:.4f} -> {verdict['mrr_at_5_after']:.4f}  "
-          f"(improved={verdict['mrr_at_5_improved']})")
-    print(f"HitRate@5  {verdict['hit_rate_at_5_before']:.4f} -> "
-          f"{verdict['hit_rate_at_5_after']:.4f}  "
-          f"(maintained={verdict['hit_rate_at_5_maintained']})")
-    print(f"Recall@5   {verdict['recall_at_5_before']:.4f} -> "
-          f"{verdict['recall_at_5_after']:.4f}  "
-          f"(maintained={verdict['recall_at_5_maintained']})")
+    print(
+        f"MRR@5      {verdict['mrr_at_5_before']:.4f} -> {verdict['mrr_at_5_after']:.4f}  "
+        f"(improved={verdict['mrr_at_5_improved']})"
+    )
+    print(
+        f"HitRate@5  {verdict['hit_rate_at_5_before']:.4f} -> "
+        f"{verdict['hit_rate_at_5_after']:.4f}  "
+        f"(maintained={verdict['hit_rate_at_5_maintained']})"
+    )
+    print(
+        f"Recall@5   {verdict['recall_at_5_before']:.4f} -> "
+        f"{verdict['recall_at_5_after']:.4f}  "
+        f"(maintained={verdict['recall_at_5_maintained']})"
+    )
     print(f"regressions: {verdict['regressed_cases'] or 'none'}")
     print(f"improvement: {verdict['reranking_is_an_improvement']}")
 
     comparison = payload["phase_b_comparison"]
     if comparison.get("available"):
-        print(f"\nhybrid_rrf reproduces Phase B baseline: "
-              f"{comparison['hybrid_rrf_reproduces_phase_b']}")
+        print(
+            f"\nhybrid_rrf reproduces Phase B baseline: "
+            f"{comparison['hybrid_rrf_reproduces_phase_b']}"
+        )
     if payload["errors"]:
         print(f"\nerrors: {payload['errors']}")
 

@@ -36,7 +36,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from src.config import get_settings
-from src.generation.llm_factory import LLMProviderError, get_chat_model, model_name_for
+from src.generation.llm_factory import LLMProviderError, model_name_for
 from src.generation.prompts import (
     ANSWER_HUMAN_PROMPT,
     ANSWER_OUTPUT_SCHEMA,
@@ -154,7 +154,9 @@ def _answer_sentences(answer: str) -> list[str]:
     Do not use a minimum length here. A brief sentence such as "Fees apply."
     can carry an unsupported policy claim and must not bypass verification.
     """
-    return [" ".join(part.split()) for part in _SENTENCE_SPLIT.split(answer.strip()) if part.strip()]
+    return [
+        " ".join(part.split()) for part in _SENTENCE_SPLIT.split(answer.strip()) if part.strip()
+    ]
 
 
 def validate_claim_citations(
@@ -199,20 +201,33 @@ def validate_claim_citations(
 
 
 def build_answer_chain(
-    *, timeout_s: float | None = None, max_retries: int | None = None
+    *,
+    timeout_s: float | None = None,
+    max_retries: int | None = None,
+    additional_system_instructions: str = "",
 ) -> Any:
-    from langchain_core.output_parsers import JsonOutputParser
+    """Build the answer chain, with optional caller-owned evaluation instructions."""
     from langchain_core.prompts import ChatPromptTemplate
 
+    from src.generation.llm_factory import build_json_chain
+    from src.generation.structured_schemas import ANSWER_SCHEMA
+
     prompt = ChatPromptTemplate.from_messages(
-        [("system", ANSWER_SYSTEM_PROMPT), ("human", ANSWER_HUMAN_PROMPT)]
+        [
+            (
+                "system",
+                ANSWER_SYSTEM_PROMPT
+                + (f"\n\n{additional_system_instructions.strip()}" if additional_system_instructions else ""),
+            ),
+            ("human", ANSWER_HUMAN_PROMPT),
+        ]
     ).partial(output_schema=ANSWER_OUTPUT_SCHEMA)
-    return (
-        prompt
-        | get_chat_model(
-            "generator", timeout_s=timeout_s, max_retries=max_retries
-        )
-        | JsonOutputParser()
+    return build_json_chain(
+        prompt,
+        "generator",
+        ANSWER_SCHEMA,
+        timeout_s=timeout_s,
+        max_retries=max_retries,
     )
 
 
@@ -259,18 +274,14 @@ def generate_grounded_answer(
     supplied = restrict_context(chunks, top_k)
 
     if not supplied:
-        return _failure(
-            question, "insufficient_evidence", "no passages were retrieved", supplied
-        )
+        return _failure(question, "insufficient_evidence", "no passages were retrieved", supplied)
 
     try:
         if chain is None:
             chain = (
                 build_answer_chain()
                 if llm_timeout_s is None and llm_max_retries is None
-                else build_answer_chain(
-                    timeout_s=llm_timeout_s, max_retries=llm_max_retries
-                )
+                else build_answer_chain(timeout_s=llm_timeout_s, max_retries=llm_max_retries)
             )
     except LLMProviderError as exc:
         logger.error("Generator unavailable: %s", exc)
@@ -299,7 +310,9 @@ def generate_grounded_answer(
         payload = RawAnswerPayload.model_validate(raw)
     except ValidationError as exc:
         logger.warning("Generator returned an unusable payload: %s", exc)
-        return _failure(question, "invalid_output", "model output did not match the required schema", supplied)
+        return _failure(
+            question, "invalid_output", "model output did not match the required schema", supplied
+        )
 
     answer_text = payload.answer.strip()
 

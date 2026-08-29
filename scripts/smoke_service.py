@@ -39,9 +39,7 @@ def run_smoke(
                 print("ERROR the remote service is not running in production mode.")
                 return 6
             if expected_profile and profile != expected_profile:
-                print(
-                    f"ERROR runtime profile is {profile!r}; expected {expected_profile!r}."
-                )
+                print(f"ERROR runtime profile is {profile!r}; expected {expected_profile!r}.")
                 return 3
 
             deadline = time.monotonic() + deadline_s

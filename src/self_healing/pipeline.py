@@ -214,9 +214,7 @@ class SelfHealingRAG:
             question=question,
             answer=draft.answer,
             abstained=False,
-            citations=[
-                c.to_dict() for c in chunks if c.citation_label in cited_labels
-            ],
+            citations=[c.to_dict() for c in chunks if c.citation_label in cited_labels],
             confidence=confidence.to_dict(),
             healing_attempts=attempts,
             rewritten_queries=rewritten,

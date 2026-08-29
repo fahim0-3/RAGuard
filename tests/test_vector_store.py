@@ -60,7 +60,7 @@ def test_pool_checks_managed_database_connections_before_checkout(monkeypatch):
     assert captured["check"] is FakePool.check_connection
     assert captured["timeout"] == 10.0
     assert captured["reconnect_timeout"] == 30.0
-    assert captured["kwargs"] == {"connect_timeout": 10}
+    assert captured["kwargs"] == {"connect_timeout": 10, "autocommit": True}
 
 
 def test_init_schema_bootstraps_vector_before_opening_the_vector_pool(monkeypatch):
@@ -81,11 +81,14 @@ def test_init_schema_bootstraps_vector_before_opening_the_vector_pool(monkeypatc
             events.append(("bootstrap_commit", None))
 
     class ApplicationConnection:
+        @contextmanager
+        def transaction(self):
+            events.append(("application_transaction_begin", None))
+            yield
+            events.append(("application_transaction_commit", None))
+
         def execute(self, sql):
             events.append(("application_sql", sql))
-
-        def commit(self):
-            events.append(("application_commit", None))
 
     def connect(url, *, connect_timeout):
         events.append(("bootstrap_connect", (url, connect_timeout)))
@@ -112,9 +115,7 @@ def test_init_schema_bootstraps_vector_before_opening_the_vector_pool(monkeypatc
     vector_store.init_schema()
 
     event_names = [name for name, _value in events]
-    assert event_names.index("bootstrap_connect") < event_names.index(
-        "application_connect"
-    )
+    assert event_names.index("bootstrap_connect") < event_names.index("application_connect")
     assert events[0] == (
         "bootstrap_connect",
         ("postgresql://admin.invalid/raguard", 7),
@@ -144,11 +145,14 @@ def test_replace_source_chunks_deletes_and_upserts_before_one_commit(monkeypatch
             events.append(("upsert", (sql, rows)))
 
     class Connection:
+        @contextmanager
+        def transaction(self):
+            events.append(("transaction_begin", None))
+            yield
+            events.append(("transaction_commit", None))
+
         def cursor(self):
             return Cursor()
-
-        def commit(self):
-            events.append(("commit", None))
 
     @contextmanager
     def connection():
@@ -169,4 +173,9 @@ def test_replace_source_chunks_deletes_and_upserts_before_one_commit(monkeypatch
     removed, written = vector_store.replace_source_chunks("policy.txt", records)
 
     assert (removed, written) == (3, 1)
-    assert [name for name, _value in events] == ["delete", "upsert", "commit"]
+    assert [name for name, _value in events] == [
+        "transaction_begin",
+        "delete",
+        "upsert",
+        "transaction_commit",
+    ]

@@ -42,6 +42,24 @@ services:
         value: cpu
       - key: RERANKER_DEVICE
         value: cpu
+      - key: RERANKER_PROVIDER
+        value: local
+      - key: RERANKER_REMOTE_ALLOWED
+        value: "false"
+      - key: VOYAGE_RERANK_MODEL
+        value: rerank-2.5-lite
+      - key: HOSTED_RERANK_TIMEOUT_SECONDS
+        value: "3"
+      - key: HOSTED_RERANK_MAX_RETRIES
+        value: "1"
+      - key: HOSTED_RERANK_TOP_K
+        value: "5"
+      - key: HOSTED_RERANK_MAX_CANDIDATES
+        value: "20"
+      - key: RERANKER_FALLBACK_PROVIDER
+        value: local
+      - key: RERANKER_CONFIDENCE_PROFILE
+        value: unverified
       - key: HF_HUB_DISABLE_XET
         value: "1"
       - key: DISABLE_SAFETENSORS_CONVERSION

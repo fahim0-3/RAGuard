@@ -13,11 +13,17 @@ writing a fresh apology each time.
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from src.self_healing.state import EvidenceGrade
 
-__all__ = ["ABSTENTION_BASE", "AbstainReason", "abstention_message"]
+__all__ = [
+    "ABSTENTION_BASE",
+    "AbstainReason",
+    "abstention_message",
+    "customer_missing_information",
+]
 
 AbstainReason = Literal[
     "no_evidence",
@@ -30,27 +36,33 @@ AbstainReason = Literal[
 ]
 
 ABSTENTION_BASE = (
-    "I don't have enough information in the available policies to answer that "
-    "accurately."
+    "I don't have enough information in the available policies to answer that accurately."
 )
 
 _CONTACT = "Please contact support"
+
+# Evidence grading deliberately fails closed when structured model execution is
+# unavailable.  These operational diagnostics are useful in logs and state,
+# but they are neither a customer-actionable missing detail nor safe retrieval
+# vocabulary for a retry query.
+_INTERNAL_DIAGNOSTIC = re.compile(
+    r"\b(?:semantic\s+evidence\s+grad(?:er|ing)|provider|request\s+budget|"
+    r"invalid\s+output|malformed\s+output)\b",
+    re.IGNORECASE,
+)
 
 _REASON_SUFFIX: dict[str, str] = {
     "no_evidence": (
         f"{_CONTACT}, or rephrase the question using the wording that appears in the "
         "policy you have in mind."
     ),
-    "insufficient_evidence": (
-        f"{_CONTACT}, or add the missing detail so I can look again."
-    ),
+    "insufficient_evidence": (f"{_CONTACT}, or add the missing detail so I can look again."),
     "retries_exhausted": (
         f"{_CONTACT}. I rephrased the search and still could not find a policy passage "
         "that covers this."
     ),
     "generation_failed": (
-        f"{_CONTACT}. I found relevant policy text but could not produce a grounded "
-        "answer from it."
+        f"{_CONTACT}. I found relevant policy text but could not produce a grounded answer from it."
     ),
     "unverified_citations": (
         f"{_CONTACT}. I could not confirm that the answer I drafted was supported by "
@@ -67,9 +79,20 @@ _REASON_SUFFIX: dict[str, str] = {
 }
 
 
-def abstention_message(
-    reason: AbstainReason, grade: EvidenceGrade | None = None
-) -> str:
+def customer_missing_information(missing_information: list[str] | None) -> list[str]:
+    """Return only customer-actionable evidence gaps.
+
+    The original values remain on ``EvidenceGrade`` for internal diagnostics;
+    this is strictly a presentation and retry-query boundary.
+    """
+    return [
+        text
+        for item in missing_information or []
+        if (text := " ".join(str(item).split())) and not _INTERNAL_DIAGNOSTIC.search(text)
+    ]
+
+
+def abstention_message(reason: AbstainReason, grade: EvidenceGrade | None = None) -> str:
     """Compose the customer-facing abstention.
 
     Names the specific missing detail when the grader identified one, which is
@@ -77,7 +100,7 @@ def abstention_message(
     """
     parts = [ABSTENTION_BASE]
 
-    missing = list(grade.missing_information) if grade else []
+    missing = customer_missing_information(grade.missing_information if grade else None)
     if missing:
         # One detail, not a list: an abstention that asks for five things reads
         # as an interrogation rather than a next step.

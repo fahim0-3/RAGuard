@@ -123,7 +123,11 @@
             "product_manual",
             "multi_policy",
             "out_of_scope",
-            "security"
+            "security",
+            "near_miss",
+            "wrong_policy",
+            "insufficient_evidence",
+            "conflicting_evidence"
           ]
         },
         "priority": { "enum": ["critical", "high", "medium", "low"] },

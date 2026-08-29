@@ -1,0 +1,21 @@
+{
+  "profile_id": "voyage-rerank-2.5-lite-v1",
+  "status": "draft",
+  "provider": "voyage",
+  "model": "rerank-2.5-lite",
+  "dataset_version": "unmeasured",
+  "corpus_fingerprint": "unmeasured",
+  "chunking_fingerprint": "unmeasured",
+  "candidate_top_k": 20,
+  "final_top_k": 5,
+  "permit_score_min": 0.0,
+  "support_score_min": 0.5,
+  "min_supporting_chunks": 2,
+  "ambiguous_margin_max": 0.1,
+  "minimum_answer_recall": 0.8,
+  "maximum_abstention_false_permit_rate": 0.0,
+  "calibration_split": "stratified-v2",
+  "development_split": "stratified-v2",
+  "held_out_split": "stratified-v2-locked",
+  "notes": "Draft placeholder only. Top score is the sole eligibility gate; support and margin are diagnostic-only. It is not imported by production and must not be marked approved without held-out safety results."
+}

@@ -60,9 +60,14 @@ def check_database() -> tuple[bool, str]:
 
 def check_llm() -> tuple[bool, str]:
     settings = get_settings()
-    if settings.llm_provider == "gemini" and not settings.google_api_key:
+    from src.generation.llm_routing import select_route
+
+    provider = select_route(settings, "evaluation").provider
+    if provider == "gemini" and not settings.google_api_key:
         return False, "LLM_NOT_CONFIGURED: GOOGLE_API_KEY is not set"
-    return True, f"provider={settings.llm_provider}"
+    if provider == "groq" and not settings.groq_api_key:
+        return False, "LLM_NOT_CONFIGURED: GROQ_API_KEY is not set"
+    return True, f"provider={provider}"
 
 
 # --------------------------------------------------------------------------
@@ -127,18 +132,20 @@ def run_safety_layer(generation_report: dict[str, Any] | None) -> dict[str, Any]
 def run_ragas_layer(generation_report: dict[str, Any] | None) -> dict[str, Any]:
     from src.evaluation.ragas_eval import run_ragas_evaluation
 
-    records = []
-    for case in (generation_report or {}).get("cases", []):
-        records.append(
-            {
-                "case_id": case.get("case_id"),
-                "question": case.get("question"),
-                "answer": case.get("answer_preview", ""),
-                "outcome": case.get("actual_outcome"),
-                "contexts": case.get("cited_policy_ids") or [],
-                "ground_truth": case.get("ground_truth", ""),
-            }
-        )
+    # GenerationCaseResult already carries the RAGAS contract: the full answer
+    # and the retrieved passage text.  Do not substitute answer_preview or
+    # policy IDs here: previews truncate claims and IDs are not evidence.
+    records = [
+        {
+            "case_id": case.get("case_id"),
+            "question": case.get("question"),
+            "answer": case.get("answer", ""),
+            "outcome": case.get("outcome") or case.get("actual_outcome"),
+            "contexts": case.get("contexts") or [],
+            "ground_truth": case.get("ground_truth", ""),
+        }
+        for case in (generation_report or {}).get("cases", [])
+    ]
 
     payload = run_ragas_evaluation(records)
     return {
@@ -158,10 +165,7 @@ def run_reranking_layer() -> dict[str, Any]:
     """
     return {
         "status": "NOT_RUN",
-        "reason": (
-            "Heavy benchmark. Run explicitly: "
-            "python -m src.evaluation.reranking_eval"
-        ),
+        "reason": ("Heavy benchmark. Run explicitly: python -m src.evaluation.reranking_eval"),
         "metrics": {},
     }
 
@@ -192,7 +196,12 @@ def overall_status(layers: dict[str, dict[str, Any]], suite: GateSuite) -> str:
 def build_report(layers: dict[str, dict[str, Any]], suite: GateSuite) -> dict[str, Any]:
     settings = get_settings()
     from src.evaluation.metrics import golden_dataset_version
+    from src.generation.llm_factory import model_name_for
+    from src.generation.llm_routing import select_route
     from src.generation.prompts import PROMPT_VERSION
+
+    workload = "evaluation" if "generation" in layers else "normal"
+    route = select_route(settings, workload)
 
     return {
         "report": "raguard_evaluation",
@@ -207,8 +216,10 @@ def build_report(layers: dict[str, dict[str, Any]], suite: GateSuite) -> dict[st
             "dataset_version": golden_dataset_version(),
             "prompt_version": PROMPT_VERSION,
             "llm_provider": settings.llm_provider,
-            "generation_model": settings.llm_model or settings.gemini_model,
-            "judge_model": settings.gemini_judge_model,
+            "llm_routing_mode": route.mode,
+            "routed_provider": route.provider,
+            "generation_model": model_name_for("generator", route.provider),
+            "judge_model": model_name_for("judge", route.provider),
             "embedding_model": settings.embedding_model,
             "runtime_profile": settings.runtime_profile,
             "reranker_model": settings.resolved_reranker_model,
@@ -227,6 +238,8 @@ def build_report(layers: dict[str, dict[str, Any]], suite: GateSuite) -> dict[st
                 "evidence_top_score_threshold": settings.evidence_top_score_threshold,
                 "evidence_min_relevant_chunks": settings.evidence_min_relevant_chunks,
                 "evidence_confidence_threshold": settings.evidence_confidence_threshold,
+                "llm_execution_profile": settings.llm_execution_profile,
+                "llm_call_limit": settings.effective_graph_llm_call_limit,
             },
         },
         "layers": {
@@ -234,7 +247,9 @@ def build_report(layers: dict[str, dict[str, Any]], suite: GateSuite) -> dict[st
             for name, layer in layers.items()
         },
         "gates": suite.to_dict(),
-        "detail": {name: layer.get("report") for name, layer in layers.items() if layer.get("report")},
+        "detail": {
+            name: layer.get("report") for name, layer in layers.items() if layer.get("report")
+        },
     }
 
 
@@ -274,8 +289,10 @@ def print_summary(payload: dict[str, Any], layers: dict[str, dict[str, Any]]) ->
         print(f"  {name:<12} {status}" + (f"  ({reason})" if reason else ""))
 
     gates = payload["gates"]
-    print(f"\n  gates: {gates['passed']} passed, {gates['failed']} failed, "
-          f"{gates['not_measured']} not measured")
+    print(
+        f"\n  gates: {gates['passed']} passed, {gates['failed']} failed, "
+        f"{gates['not_measured']} not measured"
+    )
     for category, status in gates["by_category"].items():
         print(f"    {category:<12} {status}")
 
@@ -354,8 +371,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nBLOCKED layers: {', '.join(blocked)}")
 
     if args.fail_on_regression and (suite.failures() or blocked):
-        print("\nMerge blocked. Fix the regression, or update the gate in a "
-              "separate commit that documents why the old floor was wrong.")
+        print(
+            "\nMerge blocked. Fix the regression, or update the gate in a "
+            "separate commit that documents why the old floor was wrong."
+        )
         return 1
     return 0
 

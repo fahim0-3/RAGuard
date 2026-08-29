@@ -167,6 +167,25 @@ def test_selecting_an_example_populates_the_question_field(api):
     assert app.session_state["question_text"] == EXAMPLE
 
 
+def test_asking_after_selecting_an_example_sends_that_example(api):
+    app = run_app()
+
+    app.selectbox(key="example_choice").select(EXAMPLE).run()
+    app.button[0].click().run()
+
+    assert api["sent"] == [EXAMPLE]
+
+
+def test_changing_an_example_updates_the_question_field(api):
+    replacement = "What does error PAY-402 mean at checkout?"
+    app = run_app()
+
+    app.selectbox(key="example_choice").select(EXAMPLE).run()
+    app.selectbox(key="example_choice").select(replacement).run()
+
+    assert app.session_state["question_text"] == replacement
+
+
 def test_selecting_an_example_clears_a_stale_validation_message(api):
     app = run_app()
 
@@ -227,9 +246,7 @@ def test_recent_question_returns_to_the_editable_composer(api):
     app.button[0].click().run()
 
     app.text_area(key="question_text").input("A different question").run()
-    history_button = next(
-        button for button in app.button if button.key == "recent_question_0"
-    )
+    history_button = next(button for button in app.button if button.key == "recent_question_0")
     history_button.click().run()
 
     assert app.session_state["question_text"] == CUSTOM

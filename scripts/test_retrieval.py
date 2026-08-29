@@ -44,12 +44,16 @@ def _fmt(value: float | None, spec: str = "8.4f") -> str:
 
 def print_result(rank: int, chunk: RetrievedChunk) -> None:
     preview = chunk.content[:PREVIEW_CHARS].replace("\n", " ")
-    print(f"  [{rank:>2}] policy={chunk.policy_id:<10} chunk_id={chunk.chunk_id:<4} "
-          f"source={chunk.source}")
-    print(f"       bm25={_fmt(chunk.sparse_score)}  "
-          f"vector={_fmt(chunk.dense_score)}  "
-          f"rrf={_fmt(chunk.fusion_score, '10.6f')}  "
-          f"ranks={chunk.retriever_ranks or '{}'}")
+    print(
+        f"  [{rank:>2}] policy={chunk.policy_id:<10} chunk_id={chunk.chunk_id:<4} "
+        f"source={chunk.source}"
+    )
+    print(
+        f"       bm25={_fmt(chunk.sparse_score)}  "
+        f"vector={_fmt(chunk.dense_score)}  "
+        f"rrf={_fmt(chunk.fusion_score, '10.6f')}  "
+        f"ranks={chunk.retriever_ranks or '{}'}"
+    )
     print(f"       {preview}")
     print()
 
@@ -73,16 +77,22 @@ def main() -> int:
     retriever = get_hybrid_retriever()
     print("Configuration:")
     config = retriever.config()
-    print(f"  dense_top_k={config['retrieval']['dense_top_k']}  "
-          f"sparse_top_k={config['retrieval']['sparse_top_k']}  "
-          f"final_top_k={config['retrieval']['final_top_k']}  "
-          f"rrf_k={config['rrf']['k']}")
-    print(f"  bm25: k1={config['bm25']['k1']} b={config['bm25']['b']} "
-          f"corpus={config['bm25']['corpus_size']} chunks")
-    print(f"  dedup: enabled={config['deduplication']['enabled']} "
-          f"near={config['deduplication']['near_duplicate_threshold']} "
-          f"adjacent={config['deduplication']['adjacent_threshold']} "
-          f"max_run={config['deduplication']['max_adjacent_run']}")
+    print(
+        f"  dense_top_k={config['retrieval']['dense_top_k']}  "
+        f"sparse_top_k={config['retrieval']['sparse_top_k']}  "
+        f"final_top_k={config['retrieval']['final_top_k']}  "
+        f"rrf_k={config['rrf']['k']}"
+    )
+    print(
+        f"  bm25: k1={config['bm25']['k1']} b={config['bm25']['b']} "
+        f"corpus={config['bm25']['corpus_size']} chunks"
+    )
+    print(
+        f"  dedup: enabled={config['deduplication']['enabled']} "
+        f"near={config['deduplication']['near_duplicate_threshold']} "
+        f"adjacent={config['deduplication']['adjacent_threshold']} "
+        f"max_run={config['deduplication']['max_adjacent_run']}"
+    )
 
     failures = 0
     for number, query in enumerate(PROBE_QUERIES, start=1):
@@ -92,11 +102,13 @@ def main() -> int:
 
         diagnostics = retriever.retrieve_with_diagnostics(query)
         dropped = diagnostics.deduplication.dropped if diagnostics.deduplication else []
-        print(f"  dense hits={len(diagnostics.dense_hits)}  "
-              f"bm25 hits={len(diagnostics.sparse_hits)}  "
-              f"fused={len(diagnostics.fused)}  "
-              f"deduplicated out={len(dropped)}  "
-              f"returned={len(diagnostics.results)}\n")
+        print(
+            f"  dense hits={len(diagnostics.dense_hits)}  "
+            f"bm25 hits={len(diagnostics.sparse_hits)}  "
+            f"fused={len(diagnostics.fused)}  "
+            f"deduplicated out={len(dropped)}  "
+            f"returned={len(diagnostics.results)}\n"
+        )
 
         if not diagnostics.results:
             failures += 1
@@ -109,9 +121,11 @@ def main() -> int:
         if dropped:
             print("  removed by deduplication:")
             for record in dropped:
-                print(f"    chunk_id={record.chunk_id} source={record.source} "
-                      f"reason={record.reason} similar_to={record.similar_to} "
-                      f"similarity={record.similarity}")
+                print(
+                    f"    chunk_id={record.chunk_id} source={record.source} "
+                    f"reason={record.reason} similar_to={record.similar_to} "
+                    f"similarity={record.similarity}"
+                )
 
     print("\n" + "=" * 100)
     print(f"Queries run: {len(PROBE_QUERIES)}   Queries returning nothing: {failures}")

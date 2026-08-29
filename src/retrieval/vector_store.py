@@ -46,7 +46,14 @@ def get_pool() -> ConnectionPool:
                     max_size=8,
                     timeout=settings.db_pool_timeout_s,
                     reconnect_timeout=settings.db_reconnect_timeout_s,
-                    kwargs={"connect_timeout": settings.db_connect_timeout_s},
+                    # Read paths dominate runtime traffic. Autocommit avoids a
+                    # separate COMMIT round trip when returning a read-only
+                    # connection to a remote managed database. Mutating paths
+                    # below use explicit ``conn.transaction()`` blocks.
+                    kwargs={
+                        "connect_timeout": settings.db_connect_timeout_s,
+                        "autocommit": True,
+                    },
                     configure=_configure,
                     # Managed databases such as Neon can close an idle
                     # connection while a local embedding model is loading.
@@ -111,9 +118,8 @@ def init_schema() -> None:
 
     CREATE INDEX IF NOT EXISTS chunks_source_idx ON {CHUNKS_TABLE} (source);
     """
-    with get_connection() as conn:
+    with get_connection() as conn, conn.transaction():
         conn.execute(ddl)
-        conn.commit()
     logger.info("Schema ready (vector dimension=%s)", settings.vector_dimension)
 
 
@@ -121,7 +127,6 @@ def clear_source(source: str) -> int:
     """Delete every chunk for one document. Used for idempotent re-ingestion."""
     with get_connection() as conn:
         cur = conn.execute(f"DELETE FROM {CHUNKS_TABLE} WHERE source = %s", (source,))
-        conn.commit()
         return cur.rowcount
 
 
@@ -157,15 +162,12 @@ def insert_chunks(records: Sequence[dict[str, Any]]) -> int:
     """Insert chunk records in one transaction."""
     if not records:
         return 0
-    with get_connection() as conn, conn.cursor() as cur:
+    with get_connection() as conn, conn.transaction(), conn.cursor() as cur:
         written = _upsert_chunks(cur, records)
-        conn.commit()
     return written
 
 
-def replace_source_chunks(
-    source: str, records: Sequence[dict[str, Any]]
-) -> tuple[int, int]:
+def replace_source_chunks(source: str, records: Sequence[dict[str, Any]]) -> tuple[int, int]:
     """Atomically replace every stored chunk for one source.
 
     The delete and upsert share a transaction. If serialization, constraint,
@@ -177,11 +179,10 @@ def replace_source_chunks(
     if any(record.get("source") != source for record in records):
         raise ValueError("Every replacement chunk must match the source")
 
-    with get_connection() as conn, conn.cursor() as cur:
+    with get_connection() as conn, conn.transaction(), conn.cursor() as cur:
         cur.execute(f"DELETE FROM {CHUNKS_TABLE} WHERE source = %s", (source,))
         removed = cur.rowcount
         written = _upsert_chunks(cur, records)
-        conn.commit()
     return removed, written
 
 

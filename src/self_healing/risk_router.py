@@ -139,7 +139,4 @@ def escalation_message(assessment: RiskAssessment) -> str:
     for rule in RISK_RULES:
         if rule.category == assessment.category:
             return rule.response
-    return (
-        "I am passing this to a member of our team, who will follow up with you "
-        "directly."
-    )
+    return "I am passing this to a member of our team, who will follow up with you directly."
