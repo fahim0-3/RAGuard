@@ -86,6 +86,7 @@ markers = [
     "integration: requires a running pgvector database and ingested corpus",
     "heavy: downloads or runs local transformer models",
     "llm: consumes LLM provider quota",
+    "evaluation: requires optional RAGAS or provider-evaluation dependencies",
     # `slow` implies integration and heavy, but is deliberately NOT marked
     # `integration`, so that `-m \"integration and not llm\"` stays a usable gate.
     # Reranking 20 candidates for every golden case is ~1000 cross-encoder

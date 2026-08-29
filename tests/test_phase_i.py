@@ -834,6 +834,7 @@ def test_ragas_layer_passes_full_answers_and_retrieved_passages(monkeypatch):
     ]
 
 
+@pytest.mark.evaluation
 def test_ragas_execution_failures_keep_exception_messages_out_of_reports(monkeypatch):
     from src.evaluation import ragas_eval
 
@@ -866,6 +867,7 @@ def test_ragas_execution_failures_keep_exception_messages_out_of_reports(monkeyp
     assert "secret" not in str(report)
 
 
+@pytest.mark.evaluation
 def test_ragas_uses_the_configured_gemini_embedding_backend(monkeypatch):
     from src.config.settings import Settings
     from src.evaluation import ragas_eval
@@ -886,6 +888,7 @@ def test_ragas_uses_the_configured_gemini_embedding_backend(monkeypatch):
     assert embeddings.embeddings.output_dimensionality == 1024
 
 
+@pytest.mark.evaluation
 def test_ragas_passes_explicit_embeddings_to_answer_relevancy(monkeypatch):
     import ragas
     import ragas.llms

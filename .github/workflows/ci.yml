@@ -65,7 +65,7 @@ jobs:
         # `not slow` is redundant today (every slow test is also heavy) but is
         # stated so the gate does not silently acquire a 40-minute job if that
         # pairing is ever broken.
-        run: uv run --frozen --no-sync pytest -m "not integration and not heavy and not llm and not slow" -v
+        run: uv run --frozen --no-sync pytest -m "not integration and not heavy and not llm and not slow and not evaluation" -v
 
   evaluation-gate:
     name: Golden dataset regression gate

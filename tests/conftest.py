@@ -7,7 +7,7 @@ Tests are layered by cost:
 - @pytest.mark.integration requires a running pgvector instance with the corpus
 - @pytest.mark.llm    consumes provider quota
 
-Run the fast tier with:  pytest -m "not heavy and not integration and not llm"
+Run the fast tier with:  pytest -m "not heavy and not integration and not llm and not evaluation"
 """
 
 from __future__ import annotations
