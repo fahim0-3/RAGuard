@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     )
 
     # --- LLM provider ---
-    llm_provider: Literal["gemini", "groq", "ollama"] = "gemini"
+    llm_provider: Literal["gemini", "groq", "openrouter", "ollama"] = "gemini"
     # `static` preserves the historical LLM_PROVIDER-only selection. Dynamic
     # routing chooses once per graph using explicit workload/privacy settings.
     llm_routing_mode: Literal["static", "dynamic"] = "static"
@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     llm_routing_strict_structured_output: bool = False
     google_api_key: str | None = None
     groq_api_key: str | None = Field(default=None, repr=False)
+    openrouter_api_key: str | None = Field(default=None, repr=False)
     # Verified against a live key on 2026-08-16. The previous defaults
     # (gemini-2.5-flash / gemini-2.5-flash-lite) now return 404 "no longer
     # available to new users", so the system could not generate out of the box.
@@ -80,6 +81,9 @@ class Settings(BaseSettings):
     # which is used by every structured LLM step in the self-healing graph.
     groq_model: str = "openai/gpt-oss-20b"
     groq_judge_model: str = "openai/gpt-oss-20b"
+    # OpenRouter is an OpenAI-compatible, optional dynamic fallback. Free
+    # models use prompt-plus-parser structured output, never native strict mode.
+    openrouter_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
     # ChatGroq retries transient 429/5xx responses with exponential backoff.
     # An active graph budget passes zero, so hidden retries never exceed the
     # request-level call allowance.

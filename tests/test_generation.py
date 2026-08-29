@@ -660,6 +660,62 @@ def test_groq_model_ids_are_role_aware(monkeypatch):
     assert llm_factory.model_name_for("judge") == "openai/gpt-oss-120b"
 
 
+def test_openrouter_model_and_credentials_are_provider_specific(monkeypatch):
+    from src.config import Settings
+    from src.generation import llm_factory
+
+    settings = Settings(
+        _env_file=None,
+        llm_provider="openrouter",
+        openrouter_api_key="o" * 32,
+        openrouter_model="nvidia/nemotron-3-super-120b-a12b:free",
+    )
+    monkeypatch.setattr(llm_factory, "get_settings", lambda: settings)
+
+    assert llm_factory.model_name_for("generator") == settings.openrouter_model
+    assert llm_factory.provider_config("judge")["credentials_present"] is True
+
+
+def test_openrouter_does_not_use_native_strict_structured_output(monkeypatch):
+    from src.config import Settings
+    from src.generation import llm_factory
+
+    settings = Settings(_env_file=None, llm_provider="openrouter", openrouter_api_key="o" * 32)
+    monkeypatch.setattr(llm_factory, "get_settings", lambda: settings)
+
+    assert llm_factory.uses_native_structured_output() is False
+
+
+def test_openrouter_builder_uses_openai_compatible_endpoint(monkeypatch):
+    from src.config import Settings
+    from src.generation import llm_factory
+
+    captured = {}
+
+    class FakeChatOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    module = types.ModuleType("langchain_openai")
+    module.ChatOpenAI = FakeChatOpenAI
+    monkeypatch.setitem(sys.modules, "langchain_openai", module)
+    settings = Settings(
+        _env_file=None,
+        llm_provider="openrouter",
+        openrouter_api_key="o" * 32,
+        openrouter_model="openrouter-test-model",
+    )
+    monkeypatch.setattr(llm_factory, "get_settings", lambda: settings)
+
+    llm_factory._build_openrouter("generator", timeout_s=12.5, max_retries=0)
+
+    assert captured["model"] == "openrouter-test-model"
+    assert captured["api_key"] == "o" * 32
+    assert captured["base_url"] == "https://openrouter.ai/api/v1"
+    assert captured["timeout"] == 12.5
+    assert captured["max_retries"] == 0
+
+
 def test_groq_builder_uses_bounded_retry_backoff_configuration(monkeypatch):
     from src.config import Settings
     from src.generation import llm_factory

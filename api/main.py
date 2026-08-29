@@ -384,6 +384,9 @@ def ready(settings: SettingsDep, response: JSONResponse = None) -> Any:  # noqa:
     elif provider == "groq" and not settings.groq_api_key:
         checks["llm_provider"] = {"status": "unconfigured", "provider": "groq"}
         problems.append("GROQ_API_KEY is not set")
+    elif provider == "openrouter" and not settings.openrouter_api_key:
+        checks["llm_provider"] = {"status": "unconfigured", "provider": "openrouter"}
+        problems.append("OPENROUTER_API_KEY is not set")
     else:
         checks["llm_provider"] = {
             "status": "configured",

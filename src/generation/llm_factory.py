@@ -88,6 +88,8 @@ def model_name_for(role: Role, provider: str | None = None) -> str:
         if role == "judge":
             return settings.groq_judge_model
         return model_override or settings.groq_model
+    if provider == "openrouter":
+        return settings.openrouter_model
     if role == "judge":
         return settings.gemini_judge_model
     return model_override or settings.gemini_model
@@ -184,7 +186,43 @@ def _build_groq(
     )
 
 
-_BUILDERS = {"gemini": _build_gemini, "groq": _build_groq, "ollama": _build_ollama}
+def _build_openrouter(
+    role: Role,
+    *,
+    timeout_s: float | None = None,
+    max_retries: int | None = None,
+) -> Any:
+    """Build OpenRouter through LangChain's OpenAI-compatible client."""
+    try:
+        from langchain_openai import ChatOpenAI
+    except ImportError as exc:  # pragma: no cover - depends on the environment
+        raise LLMProviderError(
+            "langchain-openai is not installed. Run: pip install langchain-openai"
+        ) from exc
+
+    settings = get_settings()
+    if not settings.openrouter_api_key:
+        raise LLMProviderError(
+            "OPENROUTER_API_KEY is not set. Create an OpenRouter key, or select Gemini, Groq, or Ollama."
+        )
+
+    return ChatOpenAI(
+        model=model_name_for(role),
+        api_key=settings.openrouter_api_key,
+        base_url="https://openrouter.ai/api/v1",
+        temperature=_temperature_for(role),
+        max_tokens=settings.llm_max_output_tokens,
+        timeout=timeout_s if timeout_s is not None else settings.llm_request_timeout_s,
+        max_retries=max_retries if max_retries is not None else settings.llm_max_retries,
+    )
+
+
+_BUILDERS = {
+    "gemini": _build_gemini,
+    "groq": _build_groq,
+    "openrouter": _build_openrouter,
+    "ollama": _build_ollama,
+}
 
 
 @lru_cache(maxsize=96)
@@ -230,7 +268,7 @@ def get_structured_chat_model(
 ) -> Any:
     """Return a schema-bound Groq model, otherwise the ordinary chat model.
 
-    Gemini and Ollama retain their existing prompt-plus-parser behavior. Groq's
+    Gemini, OpenRouter, and Ollama retain prompt-plus-parser behavior. Groq's
     GPT-OSS models support strict native JSON schemas, so use constrained
     decoding when Groq is explicitly selected instead of trusting a prompt to
     produce parseable JSON.
@@ -314,6 +352,8 @@ def provider_config(role: Role = "generator") -> dict[str, Any]:
             if provider == "gemini"
             else bool(settings.groq_api_key)
             if provider == "groq"
+            else bool(settings.openrouter_api_key)
+            if provider == "openrouter"
             else True
         ),
     }

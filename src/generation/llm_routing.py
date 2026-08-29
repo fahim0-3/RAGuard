@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance only
     from src.config.settings import Settings
 
-Provider = Literal["gemini", "groq", "ollama"]
+Provider = Literal["gemini", "groq", "openrouter", "ollama"]
 Workload = Literal["normal", "evaluation"]
 
 __all__ = [
@@ -86,6 +86,8 @@ def _configured_providers(settings: Settings) -> tuple[Provider, ...]:
         providers.append("gemini")
     if settings.groq_api_key:
         providers.append("groq")
+    if settings.openrouter_api_key:
+        providers.append("openrouter")
     # Ollama has no credential to preflight. A connection failure is handled as
     # the final failover result rather than mistakenly treating local mode as
     # unavailable without attempting it.
@@ -105,7 +107,9 @@ def select_route(settings: Settings, workload: Workload | None = None) -> LLMRou
 
     strict = settings.llm_routing_strict_structured_output or workload == "evaluation"
     preferred: tuple[Provider, ...] = (
-        ("groq", "gemini", "ollama") if strict else ("gemini", "groq", "ollama")
+        ("groq", "gemini", "openrouter", "ollama")
+        if strict
+        else ("gemini", "groq", "openrouter", "ollama")
     )
     candidates = tuple(provider for provider in preferred if provider in available)
     # Ollama is always present in `available`; this defensive fallback keeps the

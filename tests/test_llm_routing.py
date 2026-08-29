@@ -37,6 +37,7 @@ def routed_settings(**overrides: object) -> Settings:
         llm_routing_mode="dynamic",
         google_api_key="g" * 32,
         groq_api_key="r" * 32,
+        openrouter_api_key="o" * 32,
     )
     return base.model_copy(update=overrides)
 
@@ -51,16 +52,16 @@ def test_static_mode_preserves_manual_llm_provider_selection():
     assert route.can_fallback is False
 
 
-def test_dynamic_normal_rag_prefers_gemini_then_groq_then_ollama():
+def test_dynamic_normal_rag_prefers_gemini_then_groq_then_openrouter_then_ollama():
     route = select_route(routed_settings())
 
-    assert route.candidates == ("gemini", "groq", "ollama")
+    assert route.candidates == ("gemini", "groq", "openrouter", "ollama")
 
 
-def test_dynamic_strict_workload_prefers_groq_then_gemini_then_ollama():
+def test_dynamic_strict_workload_prefers_groq_then_gemini_then_openrouter_then_ollama():
     route = select_route(routed_settings(llm_routing_strict_structured_output=True))
 
-    assert route.candidates == ("groq", "gemini", "ollama")
+    assert route.candidates == ("groq", "gemini", "openrouter", "ollama")
 
 
 def test_dynamic_evaluation_workload_prefers_groq_without_query_inspection():
@@ -70,7 +71,7 @@ def test_dynamic_evaluation_workload_prefers_groq_without_query_inspection():
         route = select_route(settings)
 
     assert route.workload == "evaluation"
-    assert route.candidates == ("groq", "gemini", "ollama")
+    assert route.candidates == ("groq", "gemini", "openrouter", "ollama")
 
 
 def test_dynamic_local_only_uses_ollama_without_hosted_fallback():
@@ -83,7 +84,13 @@ def test_dynamic_local_only_uses_ollama_without_hosted_fallback():
 def test_dynamic_route_skips_hosted_provider_without_a_key():
     route = select_route(routed_settings(google_api_key=None))
 
-    assert route.candidates == ("groq", "ollama")
+    assert route.candidates == ("groq", "openrouter", "ollama")
+
+
+def test_dynamic_route_skips_openrouter_without_a_key():
+    route = select_route(routed_settings(openrouter_api_key=None))
+
+    assert route.candidates == ("gemini", "groq", "ollama")
 
 
 @pytest.mark.parametrize(
@@ -162,6 +169,24 @@ def test_factory_failover_rebuilds_the_chain_and_consumes_a_second_budgeted_call
     assert attempts == ["gemini", "groq"]
     assert budget.llm_calls_used == 2
     assert route.fallback_reasons == ["gemini:timeout"]
+
+
+def test_dynamic_route_can_advance_from_groq_to_openrouter():
+    settings = routed_settings(google_api_key=None)
+
+    with route_context(settings, "evaluation") as route:
+        assert route.provider == "groq"
+        assert advance_route(TimeoutError("deadline exceeded")) is True
+        assert route.provider == "openrouter"
+
+
+def test_dynamic_route_can_advance_from_openrouter_to_ollama():
+    settings = routed_settings(google_api_key=None, groq_api_key=None)
+
+    with route_context(settings) as route:
+        assert route.provider == "openrouter"
+        assert advance_route(TimeoutError("deadline exceeded")) is True
+        assert route.provider == "ollama"
 
 
 def test_factory_falls_back_after_groq_json_validate_failure_with_second_permit(monkeypatch):
@@ -250,7 +275,7 @@ def test_structured_output_failover_stops_after_the_final_provider(monkeypatch):
     monkeypatch.setattr(llm_factory, "get_settings", lambda: settings)
     monkeypatch.setattr(llm_factory, "get_structured_chat_model", fake_structured_model)
 
-    budget = ExecutionBudget(timeout_s=60, max_llm_calls=3)
+    budget = ExecutionBudget(timeout_s=60, max_llm_calls=4)
     with route_context(settings, "evaluation") as route, request_budget(budget):
         reserve_llm_call("generate_answer", default_timeout_s=60)
         with pytest.raises(MockGroqJsonValidateFailed):
@@ -258,11 +283,12 @@ def test_structured_output_failover_stops_after_the_final_provider(monkeypatch):
                 RunnableLambda(lambda value: value), "generator", {"type": "object"}
             ).invoke({"question": "test"})
 
-    assert attempts == ["groq", "gemini", "ollama"]
-    assert budget.llm_calls_used == 3
+    assert attempts == ["groq", "gemini", "openrouter", "ollama"]
+    assert budget.llm_calls_used == 4
     assert route.fallback_reasons == [
         "groq:structured_output_failure",
         "gemini:structured_output_failure",
+        "openrouter:structured_output_failure",
     ]
 
 
