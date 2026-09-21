@@ -27,6 +27,7 @@ from typing import Any
 from src.config import PROJECT_ROOT, get_settings
 from src.evaluation.gates import (
     GENERATION_GATES,
+    LATENCY_GATES,
     RETRIEVAL_GATES,
     SAFETY_GATES,
     GateSuite,
@@ -261,6 +262,10 @@ def collect_gates(layers: dict[str, dict[str, Any]]) -> GateSuite:
     if layers.get("retrieval", {}).get("status") == "MEASURED":
         gates.extend(RETRIEVAL_GATES)
         measured.update(layers["retrieval"]["metrics"])
+        latency = layers["retrieval"].get("latency", {})
+        measured["retrieval_latency_p50_ms"] = latency.get("p50_ms")
+        measured["retrieval_latency_p95_ms"] = latency.get("p95_ms")
+        gates.extend(LATENCY_GATES)
 
     if layers.get("generation", {}).get("status") == "MEASURED":
         gates.extend(GENERATION_GATES)

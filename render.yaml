@@ -18,7 +18,11 @@ services:
     branch: main
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    autoDeployTrigger: checksPass
+    # Deployment is deliberately manual until a separate production approval.
+    autoDeployTrigger: "off"
+    # Runs with DATABASE_ADMIN_URL before the least-privilege API process
+    # starts. The FastAPI lifespan deliberately performs no production DDL.
+    preDeployCommand: python -m src.maintenance.migrate
     healthCheckPath: /health
     numInstances: 1
     disk:
@@ -66,6 +70,8 @@ services:
         value: "1"
       - key: DATABASE_URL
         sync: false
+      - key: DATABASE_ADMIN_URL
+        sync: false
       - key: LLM_PROVIDER
         value: gemini
       - key: GOOGLE_API_KEY
@@ -91,6 +97,12 @@ services:
         value: "10"
       - key: DB_RECONNECT_TIMEOUT_S
         value: "30"
+      - key: DB_STATEMENT_TIMEOUT_S
+        value: "30"
+      - key: DB_POOL_MIN_SIZE
+        value: "1"
+      - key: DB_POOL_MAX_SIZE
+        value: "2"
       - key: OTEL_SERVICE_NAME
         value: raguard-api
 
@@ -103,7 +115,8 @@ services:
     branch: main
     dockerfilePath: ./Dockerfile.frontend
     dockerContext: .
-    autoDeployTrigger: checksPass
+    # Deployment is deliberately manual until a separate production approval.
+    autoDeployTrigger: "off"
     healthCheckPath: /_stcore/health
     envVars:
       - key: API_BASE_URL

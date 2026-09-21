@@ -205,7 +205,10 @@ def test_fully_supported_answer_is_accepted(evidence):
 @pytest.mark.parametrize(
     "mapping",
     [
-        {"claim": "Refunds to credit and debit cards take 5 to 7 business days.", "citations": [REFUND_LABEL]},
+        {
+            "claim": "Refunds to credit and debit cards take 5 to 7 business days.",
+            "citations": [REFUND_LABEL],
+        },
         ClaimCitation(
             claim="Refunds to credit and debit cards take 5 to 7 business days.",
             citations=[REFUND_LABEL],

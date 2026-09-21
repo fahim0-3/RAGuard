@@ -172,8 +172,7 @@ def semantic_only_evidence_grade(
 
     grade = EvidenceGrade.model_validate({**raw, "signals": signals})
     grade.sufficient = bool(
-        grade.sufficient
-        and grade.confidence >= get_settings().evidence_confidence_threshold
+        grade.sufficient and grade.confidence >= get_settings().evidence_confidence_threshold
     )
     if grade.sufficient:
         grade.missing_information = []
@@ -214,9 +213,9 @@ def evaluate_path(
 
     def timing() -> tuple[float, float]:
         """Return non-overlapping downstream and end-to-end wall time."""
-        path_after_shared_ms = initial_path_after_shared_ms + (
-            time.perf_counter() - started
-        ) * 1000.0
+        path_after_shared_ms = (
+            initial_path_after_shared_ms + (time.perf_counter() - started) * 1000.0
+        )
         return path_after_shared_ms, shared_latency_ms + path_after_shared_ms
 
     def result_timing() -> dict[str, float]:
@@ -227,6 +226,7 @@ def evaluate_path(
             "path_after_shared_ms": path_after_shared_ms,
             "end_to_end_ms": end_to_end_ms,
         }
+
     # Evidence grading and generation invoke one structured chain each. The
     # verifier may short-circuit lexically, so only its observed entailment
     # claim calls are counted as LLM calls below.
@@ -255,15 +255,11 @@ def evaluate_path(
     grade = grade_evidence()
     components["evidence_grader_ms"] = (time.perf_counter() - grade_started) * 1000.0
     grade_dump = grade.model_dump()
-    answerability_dump = (
-        grade_dump if "proposition_status" in grade_dump else {}
-    )
+    answerability_dump = grade_dump if "proposition_status" in grade_dump else {}
     answerability_failure_category = str(getattr(grade, "failure_category", ""))
     answerability_failure_reason = str(getattr(grade, "failure_reason", ""))
     answerability_failure_phase = str(getattr(grade, "failure_phase", ""))
-    answerability_failure_exception_type = str(
-        getattr(grade, "failure_exception_type", "")
-    )
+    answerability_failure_exception_type = str(getattr(grade, "failure_exception_type", ""))
     grade_failure = bool(
         grade.deterministic_only
         and any("unavailable" in item or "invalid" in item for item in grade.missing_information)
@@ -399,9 +395,7 @@ def aggregate_path(results: list[PathEvaluation]) -> dict[str, Any]:
         )
 
     correct = counts["correct_answer"] + counts["correct_abstention"]
-    component_names = sorted(
-        {name for result in results for name in result.component_latency_ms}
-    )
+    component_names = sorted({name for result in results for name in result.component_latency_ms})
     return {
         "final_answer_abstain_accuracy": correct / total if total else 0.0,
         "answer_recall": counts["correct_answer"] / expected_answers if expected_answers else 0.0,
@@ -430,9 +424,7 @@ def aggregate_path(results: list[PathEvaluation]) -> dict[str, Any]:
             "citation_verification_failure": sum(
                 result.citation_verification_failed for result in results
             ),
-            "evidence_grader_rejection": sum(
-                result.evidence_grader_rejected for result in results
-            ),
+            "evidence_grader_rejection": sum(result.evidence_grader_rejected for result in results),
         },
         # ``latency_ms`` remains the legacy name for end-to-end wall time.
         "latency_ms": latency_summary([result.end_to_end_ms for result in results]),
@@ -475,9 +467,7 @@ def aggregate_paired_timing(
             continue
         delta = comparison.end_to_end_ms - base.end_to_end_ms
         ratio = (
-            base.end_to_end_ms / comparison.end_to_end_ms
-            if comparison.end_to_end_ms > 0.0
-            else 0.0
+            base.end_to_end_ms / comparison.end_to_end_ms if comparison.end_to_end_ms > 0.0 else 0.0
         )
         bge_cost = base.component_latency_ms.get("bge_fixed_order_confidence_ms", 0.0)
         deltas.append(delta)

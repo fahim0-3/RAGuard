@@ -32,6 +32,10 @@ _pool_lock = threading.Lock()
 
 def _configure(conn: psycopg.Connection) -> None:
     register_vector(conn)
+    # This applies to every pooled runtime connection. Schema work uses the
+    # separate admin connection, so application credentials need no DDL rights.
+    statement_timeout_ms = int(get_settings().db_statement_timeout_s * 1_000)
+    conn.execute(f"SET statement_timeout TO {statement_timeout_ms}")
 
 
 def get_pool() -> ConnectionPool:
@@ -42,8 +46,8 @@ def get_pool() -> ConnectionPool:
                 settings = get_settings()
                 _pool = ConnectionPool(
                     conninfo=settings.database_url,
-                    min_size=1,
-                    max_size=8,
+                    min_size=getattr(settings, "db_pool_min_size", 1),
+                    max_size=getattr(settings, "db_pool_max_size", 8),
                     timeout=settings.db_pool_timeout_s,
                     reconnect_timeout=settings.db_reconnect_timeout_s,
                     # Read paths dominate runtime traffic. Autocommit avoids a
@@ -150,7 +154,8 @@ def _upsert_chunks(cur: psycopg.Cursor, records: Sequence[dict[str, Any]]) -> in
         INSERT INTO {CHUNKS_TABLE} (source, doc_id, chunk_index, content, metadata, embedding)
         VALUES (%s, %s, %s, %s, %s::jsonb, %s)
         ON CONFLICT (source, chunk_index) DO UPDATE
-        SET content = EXCLUDED.content,
+        SET doc_id = EXCLUDED.doc_id,
+            content = EXCLUDED.content,
             metadata = EXCLUDED.metadata,
             embedding = EXCLUDED.embedding
     """

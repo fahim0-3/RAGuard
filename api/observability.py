@@ -13,13 +13,25 @@ import logging
 import math
 import threading
 from collections import Counter
+from collections.abc import Mapping
 from typing import Any
 
 from src.timing import GRAPH_STAGE_NAMES, RETRIEVAL_STAGE_NAMES
 
 logger = logging.getLogger(__name__)
 
-_LATENCY_BUCKETS_MS = (100.0, 250.0, 500.0, 1_000.0, 2_500.0, 5_000.0, 10_000.0)
+_LATENCY_BUCKETS_MS = (
+    100.0,
+    250.0,
+    500.0,
+    1_000.0,
+    2_500.0,
+    5_000.0,
+    10_000.0,
+    25_000.0,
+    60_000.0,
+    150_000.0,
+)
 
 
 class RuntimeMetrics:
@@ -28,21 +40,25 @@ class RuntimeMetrics:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._counters: Counter[str] = Counter()
+        self._inflight_queries = 0
+        self._query_concurrency_limit = 0
         self._latency_count = 0
         self._latency_sum_ms = 0.0
         self._latency_max_ms = 0.0
         self._latency_buckets: Counter[float] = Counter()
         self._stage_latency_count: Counter[str] = Counter()
-        self._stage_latency_sum_ms: Counter[str] = Counter()
+        self._stage_latency_sum_ms: dict[str, float] = {}
         self._stage_latency_max_ms: dict[str, float] = {}
         self._retrieval_latency_count: Counter[str] = Counter()
-        self._retrieval_latency_sum_ms: Counter[str] = Counter()
+        self._retrieval_latency_sum_ms: dict[str, float] = {}
         self._retrieval_latency_max_ms: dict[str, float] = {}
 
     def reset(self) -> None:
         """Clear process-local state for an explicit service/test reset."""
         with self._lock:
             self._counters.clear()
+            self._inflight_queries = 0
+            self._query_concurrency_limit = 0
             self._latency_count = 0
             self._latency_sum_ms = 0.0
             self._latency_max_ms = 0.0
@@ -57,6 +73,17 @@ class RuntimeMetrics:
     def record_admitted(self) -> None:
         with self._lock:
             self._counters["query_admitted_total"] += 1
+            self._inflight_queries += 1
+
+    def configure_query_capacity(self, concurrency_limit: int) -> None:
+        """Record the current configured public-work capacity as a safe gauge."""
+        with self._lock:
+            self._query_concurrency_limit = max(0, int(concurrency_limit))
+
+    def record_released(self) -> None:
+        """Record admission teardown, including client cancellation paths."""
+        with self._lock:
+            self._inflight_queries = max(0, self._inflight_queries - 1)
 
     def record_admission_rejected(self, reason: str) -> None:
         with self._lock:
@@ -138,6 +165,8 @@ class RuntimeMetrics:
                     "completed": counters.get("query_completed_total", 0),
                     "failed": counters.get("query_failed_total", 0),
                     "admission_rejected": counters.get("query_admission_rejections_total", 0),
+                    "in_flight": self._inflight_queries,
+                    "concurrency_limit": self._query_concurrency_limit,
                     "outcomes": _group(counters, "query_outcome_", "_total"),
                     "failures": _group(counters, "query_failure_", "_total"),
                     "admission_rejections": _group(counters, "query_admission_rejected_", "_total"),
@@ -180,6 +209,8 @@ class RuntimeMetrics:
         with self._lock:
             counters = dict(self._counters)
             latency_count = self._latency_count
+            inflight_queries = self._inflight_queries
+            query_concurrency_limit = self._query_concurrency_limit
             latency_sum_seconds = self._latency_sum_ms / 1_000.0
             latency_max_seconds = self._latency_max_ms / 1_000.0
             latency_buckets = dict(self._latency_buckets)
@@ -196,6 +227,16 @@ class RuntimeMetrics:
             "raguard_queries_admitted",
             "Queries admitted to the workflow.",
             counters.get("query_admitted_total", 0),
+        )
+        lines.extend(
+            (
+                "# HELP raguard_queries_in_flight Queries currently holding an admission lease.",
+                "# TYPE raguard_queries_in_flight gauge",
+                f"raguard_queries_in_flight {inflight_queries}",
+                "# HELP raguard_query_concurrency_limit Configured maximum concurrent admitted queries.",
+                "# TYPE raguard_query_concurrency_limit gauge",
+                f"raguard_query_concurrency_limit {query_concurrency_limit}",
+            )
         )
         _emit_counter(
             lines,
@@ -337,7 +378,7 @@ def _record_timing_stats(
     values: dict[str, dict[str, Any]] | None,
     allowed_names: tuple[str, ...],
     counts: Counter[str],
-    sums_ms: Counter[str],
+    sums_ms: dict[str, float],
     maxima_ms: dict[str, float],
 ) -> None:
     allowed = frozenset(allowed_names)
@@ -355,12 +396,12 @@ def _record_timing_stats(
         if not math.isfinite(total) or not math.isfinite(maximum):
             continue
         counts[name] += count
-        sums_ms[name] += total
+        sums_ms[name] = sums_ms.get(name, 0.0) + total
         maxima_ms[name] = max(maxima_ms.get(name, 0.0), maximum)
 
 
 def _timing_snapshot(
-    counts: Counter[str], sums_ms: Counter[str], maxima_ms: dict[str, float]
+    counts: Mapping[str, int], sums_ms: Mapping[str, float], maxima_ms: Mapping[str, float]
 ) -> dict[str, dict[str, float | int]]:
     return {
         name: {
@@ -395,9 +436,9 @@ def _emit_timing_summary(
     lines: list[str],
     name: str,
     help_text: str,
-    counts: dict[str, int],
-    sums_ms: dict[str, float],
-    maxima_ms: dict[str, float],
+    counts: Mapping[str, int],
+    sums_ms: Mapping[str, float],
+    maxima_ms: Mapping[str, float],
     label: str,
 ) -> None:
     lines.extend(

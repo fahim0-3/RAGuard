@@ -147,6 +147,7 @@ def test_factory_failover_rebuilds_the_chain_and_consumes_a_second_budgeted_call
         provider = current_provider(settings)
         attempts.append(provider)
         if provider == "gemini":
+
             def fail(_value):
                 raise TimeoutError("hosted timeout")
 
@@ -202,6 +203,7 @@ def test_factory_falls_back_after_groq_json_validate_failure_with_second_permit(
         provider = current_provider(settings)
         attempts.append(provider)
         if provider == "groq":
+
             def fail(_value):
                 raise MockGroqJsonValidateFailed("Failed to validate JSON")
 
@@ -336,6 +338,7 @@ def test_malformed_fallback_payload_is_rejected_not_accepted(monkeypatch):
 
     def fake_structured_model(*_args, **_kwargs):
         if current_provider(settings) == "groq":
+
             def fail(_value):
                 raise MockGroqJsonValidateFailed("Failed to validate JSON")
 

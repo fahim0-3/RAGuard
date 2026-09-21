@@ -14,6 +14,7 @@ import threading
 from typing import TYPE_CHECKING
 
 from src.config import get_settings
+from src.self_healing.execution_budget import remaining_seconds
 
 if TYPE_CHECKING:  # pragma: no cover - import cost avoided at runtime
     from sentence_transformers import SentenceTransformer
@@ -96,7 +97,16 @@ def _embed_gemini(texts: list[str], *, task_type: str) -> list[list[float]]:
     settings = get_settings()
     if not settings.google_api_key:
         raise RuntimeError("GOOGLE_API_KEY is required for Gemini embeddings")
-    response = genai.Client(api_key=settings.google_api_key).models.embed_content(
+    remaining = remaining_seconds("query_embedding")
+    timeout_ms = int(
+        min(settings.embedding_request_timeout_s, remaining) * 1_000
+        if remaining is not None
+        else settings.embedding_request_timeout_s * 1_000
+    )
+    response = genai.Client(
+        api_key=settings.google_api_key,
+        http_options=types.HttpOptions(timeout=max(1, timeout_ms)),
+    ).models.embed_content(
         model=settings.gemini_embedding_model,
         contents=texts,
         config=types.EmbedContentConfig(

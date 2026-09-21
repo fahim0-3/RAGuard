@@ -81,7 +81,9 @@ def payload(**overrides):
 
 
 def grade(raw):
-    return grade_answerability("question", [chunk()], chain=StaticChain(raw), signals={"chunk_count": 1})
+    return grade_answerability(
+        "question", [chunk()], chain=StaticChain(raw), signals={"chunk_count": 1}
+    )
 
 
 def test_cross_route_transfer_is_insufficient_without_case_specific_logic():
@@ -623,7 +625,10 @@ def test_answerability_failure_categories_are_sanitized_and_fail_closed():
     cases = [
         (ProviderError(status_code=429), "rate_limited"),
         (TimeoutError("deadline"), "timeout"),
-        (ProviderError(body={"error": {"code": "json_validate_failed"}}), "structured_output_failure"),
+        (
+            ProviderError(body={"error": {"code": "json_validate_failed"}}),
+            "structured_output_failure",
+        ),
         (ProviderError(message="connection unavailable"), "provider_unavailable"),
         (RuntimeError("request budget exhausted"), "budget_exhausted"),
     ]

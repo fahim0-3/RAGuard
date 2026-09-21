@@ -724,6 +724,7 @@ def test_prometheus_metrics_are_scrapeable_and_private(client):
     assert response.status_code == 200
     assert "text/plain" in response.headers["content-type"]
     assert "raguard_queries_admitted_total 1" in response.text
+    assert "raguard_query_concurrency_limit 4" in response.text
     assert 'raguard_query_outcomes_total{outcome="answer"} 1' in response.text
     assert "raguard_query_latency_seconds_bucket" in response.text
     assert 'raguard_stage_latency_seconds_sum{stage="generate_answer"} 0.025000' in response.text

@@ -18,6 +18,7 @@ def production_settings(**overrides) -> Settings:
         _env_file=None,
         RAGUARD_ENVIRONMENT="production",
         database_url="postgresql://user:secret@db.example.net/raguard?sslmode=require",
+        database_admin_url="postgresql://admin:secret@admin.example.net/raguard?sslmode=require",
         google_api_key="g" * 32,
         admin_api_key="a" * 48,
         cors_allow_origins="https://app.example.net",
@@ -38,6 +39,24 @@ def test_valid_production_configuration_passes():
     assert report.errors == ()
 
 
+def test_openrouter_uses_its_own_production_credential_validation():
+    valid = production_settings(
+        llm_provider="openrouter",
+        openrouter_api_key="o" * 32,
+        ollama_base_url="http://localhost:11434",
+    )
+    assert validate_production_settings(valid).ok is True
+
+    missing = production_settings(
+        llm_provider="openrouter",
+        openrouter_api_key=None,
+        ollama_base_url="https://ollama.example.net",
+    )
+    assert "openrouter_api_key_missing" in {
+        issue.code for issue in validate_production_settings(missing).errors
+    }
+
+
 @pytest.mark.parametrize(
     ("overrides", "expected_code"),
     [
@@ -51,6 +70,7 @@ def test_valid_production_configuration_passes():
             {"database_admin_url": "postgresql://u:p@localhost/db?sslmode=require"},
             "database_admin_url_local",
         ),
+        ({"database_admin_url": ""}, "database_admin_url_required"),
         ({"google_api_key": "your-key"}, "google_api_key_missing"),
         (
             {"reranker_provider": "voyage", "reranker_remote_allowed": False},

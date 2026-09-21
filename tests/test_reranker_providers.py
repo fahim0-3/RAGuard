@@ -137,7 +137,9 @@ def test_voyage_reorders_by_provider_score_without_writing_bge_score_fields():
     )
     first, second = chunk(1), chunk(2)
 
-    result = reranker.rerank_with_diagnostics("sensitive query", [first, second], top_k=2, candidate_top_k=2)
+    result = reranker.rerank_with_diagnostics(
+        "sensitive query", [first, second], top_k=2, candidate_top_k=2
+    )
 
     assert [item.chunk_id for item in result.chunks] == [2, 1]
     assert result.provider_raw_scores == {2: 0.9, 1: 0.2}
@@ -286,8 +288,7 @@ def test_voyage_preserves_the_top_twenty_to_top_five_contract():
                 200,
                 {
                     "data": [
-                        {"index": index, "relevance_score": float(20 - index)}
-                        for index in range(5)
+                        {"index": index, "relevance_score": float(20 - index)} for index in range(5)
                     ]
                 },
             )

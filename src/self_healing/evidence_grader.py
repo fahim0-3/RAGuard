@@ -311,6 +311,79 @@ def grade_evidence(
             deterministic_only=True,
         )
 
+    # Serving uses the condition-aware answerability contract.  It was first
+    # evaluated separately because it changes abstention behaviour, but the
+    # older relevance-only schema cannot safely distinguish an applicable
+    # exception from a superficially related policy.  Keep an explicitly
+    # injected chain on the legacy seam for focused compatibility tests and
+    # third-party integrations that already implement EVIDENCE_GRADE_SCHEMA.
+    if chain is None:
+        from src.evaluation.answerability_ablation import (
+            _build_answerability_chain,
+            grade_answerability,
+        )
+
+        try:
+            answerability_chain = (
+                _build_answerability_chain()
+                if llm_timeout_s is None and llm_max_retries is None
+                else _build_answerability_chain(
+                    timeout_s=llm_timeout_s, max_retries=llm_max_retries
+                )
+            )
+            decision = grade_answerability(
+                query,
+                chunks,
+                chain=answerability_chain,
+                signals=signals,
+            )
+        except Exception as exc:  # noqa: BLE001 - serving must fail closed
+            logger.warning(
+                "Condition-aware evidence grader unavailable; refusing to answer (%s)", exc
+            )
+            return EvidenceGrade(
+                relevant=deterministic_ok,
+                sufficient=False,
+                confidence=0.0,
+                missing_information=["semantic evidence grader unavailable"],
+                rationale="semantic evidence grader unavailable",
+                signals=signals,
+                deterministic_only=True,
+            )
+
+        signals = {
+            **signals,
+            "answerability": {
+                "proposition_status": decision.proposition_status,
+                "question_resolution": decision.question_resolution,
+                "evidence_conflict": decision.evidence_conflict,
+                "policy_instruction_conflict": decision.policy_instruction_conflict,
+                "sufficiency_consistency": decision.sufficiency_consistency,
+            },
+        }
+        confident_enough = decision.confidence >= settings.evidence_confidence_threshold
+        sufficient = bool(deterministic_ok and decision.sufficient and confident_enough)
+        return EvidenceGrade(
+            relevant=bool(decision.relevant or signals["policy_id_exact_match"]),
+            sufficient=sufficient,
+            confidence=decision.confidence,
+            missing_information=(
+                []
+                if sufficient
+                else (
+                    decision.missing_information
+                    or [
+                        deterministic_reason
+                        if not deterministic_ok
+                        else "evidence does not safely resolve the requested proposition"
+                    ]
+                )
+            ),
+            rationale=decision.rationale or deterministic_reason,
+            signals=signals,
+            deterministic_only=decision.deterministic_only,
+        )
+
     try:
         if chain is None:
             chain = (

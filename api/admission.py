@@ -65,7 +65,7 @@ class AdmissionController(Protocol):
         now: float | None = None,
     ) -> AdmissionLease: ...
 
-    def release(self, lease: AdmissionLease | None = None) -> None: ...
+    def release(self, lease: AdmissionLease) -> None: ...
 
     def reset(self) -> None: ...
 
@@ -121,13 +121,10 @@ class QueryAdmission:
             now=now,
         ).reason
 
-    def release(self, lease: AdmissionLease | None = None) -> None:
+    def release(self, lease: AdmissionLease) -> None:
         with self._lock:
-            if lease and lease.token:
+            if lease.token:
                 self._active.discard(lease.token)
-            elif self._active:
-                # Backward-compatible no-argument cleanup for local callers.
-                self._active.pop()
 
     def reset(self) -> None:
         """Clear local counters for an explicit application/test reset."""
@@ -200,8 +197,8 @@ class RedisQueryAdmission:
             return AdmissionLease(reason="busy")
         return AdmissionLease(token=token)
 
-    def release(self, lease: AdmissionLease | None = None) -> None:
-        if not lease or not lease.token:
+    def release(self, lease: AdmissionLease) -> None:
+        if not lease.token:
             return
         try:
             self._client.eval(_RELEASE_SCRIPT, 1, f"{self._key_prefix}:active", lease.token)

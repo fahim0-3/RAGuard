@@ -60,7 +60,6 @@ class QueryRequest(BaseModel):
     request_id: str | None = Field(
         default=None, description="Client-supplied correlation ID. Generated when absent."
     )
-    session_id: str | None = Field(default=None, description="Optional conversation grouping.")
 
     @model_validator(mode="after")
     def _resolve_query(self) -> QueryRequest:
@@ -75,7 +74,7 @@ class QueryRequest(BaseModel):
         self.question = text
         return self
 
-    @field_validator("request_id", "session_id")
+    @field_validator("request_id")
     @classmethod
     def _safe_id(cls, value: str | None) -> str | None:
         if value is None:

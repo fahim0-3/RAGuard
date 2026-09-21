@@ -257,6 +257,9 @@ def hybrid_retrieve(state: GraphState) -> dict[str, Any]:
             # Compatibility seam for test doubles and third-party retrievers.
             chunks = retriever.retrieve(query)
             retrieval_samples = {}
+        ensure_time_remaining(NODE_RETRIEVE)
+    except ExecutionBudgetExceeded as exc:
+        return _budget_exhausted_update(state, NODE_RETRIEVE, exc)
     except Exception:  # noqa: BLE001 - retrieval outage must not crash the graph
         logger.exception("Retrieval failed")
         return {
@@ -294,6 +297,8 @@ def rerank(state: GraphState) -> dict[str, Any]:
 
     query = state.get("current_query") or state.get("original_query", "")
     result = get_reranker().rerank_with_diagnostics(query, chunks)
+    if exhausted := _deadline_guard(state, NODE_RERANK):
+        return exhausted
     diagnostics = result.observability_dict()
     logger.info(
         "Reranker completed [requested_provider=%s, actual_provider=%s, fallback=%s, "

@@ -217,7 +217,11 @@ def build_answer_chain(
             (
                 "system",
                 ANSWER_SYSTEM_PROMPT
-                + (f"\n\n{additional_system_instructions.strip()}" if additional_system_instructions else ""),
+                + (
+                    f"\n\n{additional_system_instructions.strip()}"
+                    if additional_system_instructions
+                    else ""
+                ),
             ),
             ("human", ANSWER_HUMAN_PROMPT),
         ]

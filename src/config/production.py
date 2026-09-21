@@ -80,7 +80,14 @@ def validate_production_settings(settings: Settings) -> PreflightReport:
                     "voyage_api_key_missing", "A non-placeholder Voyage API key is required."
                 )
             )
-    if settings.database_admin_url.strip():
+    if not settings.database_admin_url.strip():
+        errors.append(
+            PreflightIssue(
+                "database_admin_url_required",
+                "Production migrations require a separate DATABASE_ADMIN_URL.",
+            )
+        )
+    else:
         admin_database = urlparse(settings.database_admin_url)
         if admin_database.scheme not in {"postgres", "postgresql"} or not admin_database.hostname:
             errors.append(
@@ -124,9 +131,20 @@ def validate_production_settings(settings: Settings) -> PreflightReport:
         key = settings.groq_api_key or ""
         if len(key) < 20 or _is_placeholder(key):
             errors.append(
-                PreflightIssue("groq_api_key_missing", "A non-placeholder provider key is required.")
+                PreflightIssue(
+                    "groq_api_key_missing", "A non-placeholder provider key is required."
+                )
             )
-    else:
+    elif selected_provider == "openrouter":
+        key = settings.openrouter_api_key or ""
+        if len(key) < 20 or _is_placeholder(key):
+            errors.append(
+                PreflightIssue(
+                    "openrouter_api_key_missing",
+                    "A non-placeholder OpenRouter API key is required.",
+                )
+            )
+    elif selected_provider == "ollama":
         ollama_url = urlparse(settings.ollama_base_url)
         if (
             ollama_url.scheme != "https"

@@ -198,6 +198,25 @@ def test_candidates_are_sorted_by_descending_rerank_score():
     assert [c.rerank_score for c in result.chunks] == [5.0, 2.0, -1.0]
 
 
+def test_zero_logit_sorts_between_positive_and_negative_scores():
+    chunks = [make_chunk(1), make_chunk(2), make_chunk(3)]
+    result = make_reranker(FakeModel([0.0, -1.0, 1.0])).rerank_with_diagnostics(
+        "q", chunks, top_k=3
+    )
+
+    assert [c.chunk_id for c in result.chunks] == [3, 1, 2]
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_reranker_scores_fail_closed(invalid):
+    result = make_reranker(FakeModel([invalid])).rerank_with_diagnostics(
+        "q", [make_chunk(1)], top_k=1
+    )
+
+    assert result.reranker_used is False
+    assert result.failure_stage == "inference"
+
+
 def test_reranking_promotes_a_low_ranked_candidate():
     """The Phase B failure mode: the right document sits below the wrong one."""
     chunks = [make_chunk(1, source="manual.txt"), make_chunk(2, source="damaged.txt")]
@@ -475,7 +494,9 @@ def test_result_to_dict_records_failure_state():
 
 
 def test_result_exposes_queue_and_inference_latency_without_query_content():
-    result = make_reranker(FakeModel([1.0])).rerank_with_diagnostics("sensitive query", [make_chunk(1)])
+    result = make_reranker(FakeModel([1.0])).rerank_with_diagnostics(
+        "sensitive query", [make_chunk(1)]
+    )
     payload = result.to_dict()
 
     assert payload["queue_wait_ms"] >= 0

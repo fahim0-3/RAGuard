@@ -1,8 +1,7 @@
-"""Evaluation-only structured answerability grading.
+"""Structured condition-aware answerability grading.
 
-This module is intentionally not imported by serving code.  It tests whether a
-more explicit semantic contract can distinguish relevant policy text from
-evidence that safely resolves the exact proposition the user requested.
+The evaluator and serving path share this closed semantic contract so the
+unsafe cases found during ablation cannot remain evaluation-only findings.
 """
 
 from __future__ import annotations
@@ -194,7 +193,7 @@ Passages:
 def _build_answerability_chain(
     *, timeout_s: float | None = None, max_retries: int | None = None
 ) -> Any:
-    """Build the evaluation-only native structured-output chain."""
+    """Build the native structured-output chain for answerability grading."""
     from langchain_core.prompts import ChatPromptTemplate
 
     from src.generation.llm_factory import build_json_chain
@@ -275,11 +274,9 @@ def _safe_sufficiency(decision: AnswerabilityDecision) -> bool:
         if condition.condition_role == "branch_selector"
     )
     resolution_matches_proposition = (
-        decision.question_resolution == "affirmative"
-        and decision.proposition_status == "entailed"
+        decision.question_resolution == "affirmative" and decision.proposition_status == "entailed"
     ) or (
-        decision.question_resolution == "negative"
-        and decision.proposition_status == "contradicted"
+        decision.question_resolution == "negative" and decision.proposition_status == "contradicted"
     )
     return bool(
         decision.relevant
@@ -289,14 +286,15 @@ def _safe_sufficiency(decision: AnswerabilityDecision) -> bool:
         and resolution_matches_proposition
         and not decision.policy_instruction_conflict
         and not has_unknown_required_condition
-        and (negative_resolution or not any(
-            condition.required and condition.status == "failed"
-            for condition in decision.evidence_conditions
-        ))
-        and not decision.evidence_conflict
         and (
-            decision.request_scope != "general_policy" or general_branch_coverage_complete
+            negative_resolution
+            or not any(
+                condition.required and condition.status == "failed"
+                for condition in decision.evidence_conditions
+            )
         )
+        and not decision.evidence_conflict
+        and (decision.request_scope != "general_policy" or general_branch_coverage_complete)
         and not decision.missing_information
     )
 
@@ -426,5 +424,7 @@ def grade_answerability(
     if decision.sufficient:
         decision.missing_information = []
     elif not decision.missing_information:
-        decision.missing_information = ["evidence does not safely resolve the requested proposition"]
+        decision.missing_information = [
+            "evidence does not safely resolve the requested proposition"
+        ]
     return decision

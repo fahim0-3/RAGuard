@@ -79,9 +79,7 @@ def test_stratified_selection_respects_requested_outcome_counts_and_has_no_dupli
         *(selection_case(f"O-{index}", "abstain", "out_of_scope") for index in range(2)),
     ]
 
-    selected = select_stratified_cases(
-        cases, answer_cases=3, abstain_cases=4, selection_seed=42
-    )
+    selected = select_stratified_cases(cases, answer_cases=3, abstain_cases=4, selection_seed=42)
 
     assert sum(case["expected_outcome"] == "answer" for case in selected) == 3
     assert sum(case["expected_outcome"] == "abstain" for case in selected) == 4
@@ -131,9 +129,7 @@ def test_explicit_case_selection_preserves_one_or_multiple_supplied_ids():
 
     one = select_explicit_cases(cases, ["GC-002"])
     multiple = select_explicit_cases(cases, ["GC-003", "GC-001", "GC-002"])
-    metadata = selection_metadata(
-        multiple, selection_mode="explicit_case_ids", selection_seed=None
-    )
+    metadata = selection_metadata(multiple, selection_mode="explicit_case_ids", selection_seed=None)
 
     assert [case["id"] for case in one] == ["GC-002"]
     assert [case["id"] for case in multiple] == ["GC-003", "GC-001", "GC-002"]

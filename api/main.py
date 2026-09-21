@@ -71,6 +71,7 @@ from src.config import (
 from src.generation.llm_factory import LLMProviderError, model_name_for
 from src.generation.llm_routing import select_route
 from src.reranking import (
+    close_reranker,
     is_reranker_model_loaded,
     loaded_reranker_model_name,
     reranker_model_load_error,
@@ -112,7 +113,12 @@ async def lifespan(app: FastAPI):
     indexed_chunks = 0
     database_ready = False
     try:
-        init_schema()
+        # DDL belongs to the deployment migration step in production.  The
+        # runtime account can consequently be read/write on chunks without
+        # CREATE EXTENSION or CREATE TABLE privileges. Development retains the
+        # convenient idempotent bootstrap.
+        if settings.runtime_environment != "production":
+            init_schema()
         indexed_chunks = count_chunks()
         database_ready = True
         logger.info("Connected to pgvector, %d chunks indexed", indexed_chunks)
@@ -142,6 +148,7 @@ async def lifespan(app: FastAPI):
         logger.info("Skipping automatic model warmup while the database is unavailable")
 
     yield
+    close_reranker()
     close_pool()
     shutdown_tracing()
 
@@ -235,6 +242,7 @@ def admit_query(request: Request, settings: SettingsDep) -> Iterator[None]:
     This is intentionally process-local. A distributed deployment must enforce
     the same limit before traffic reaches individual workers.
     """
+    runtime_metrics.configure_query_capacity(settings.query_max_concurrency)
     peer = request.client.host if request.client else "unknown"
     lease = query_admission.acquire(
         peer,
@@ -255,6 +263,7 @@ def admit_query(request: Request, settings: SettingsDep) -> Iterator[None]:
         yield
     finally:
         query_admission.release(lease)
+        runtime_metrics.record_released()
 
 
 AdminDep = Annotated[None, Depends(require_admin)]
@@ -598,7 +607,7 @@ def to_response(state: dict[str, Any], summary: dict[str, Any], latency_ms: floa
 
 @app.post("/query", response_model=QueryResponse)
 def query(
-    request: QueryRequest, service: GraphDep, _admission: AdmissionDep
+    request: QueryRequest, _admission: AdmissionDep, service: GraphDep
 ) -> QueryResponse | JSONResponse:
     """Run the self-healing workflow over one question.
 

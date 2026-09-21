@@ -9,24 +9,23 @@ from src.config import Settings
 def test_admission_limits_concurrent_work():
     guard = QueryAdmission()
 
-    assert guard.try_acquire("127.0.0.1", max_concurrency=1, requests_per_minute=10) is None
+    first = guard.acquire("127.0.0.1", max_concurrency=1, requests_per_minute=10)
+    assert first.reason is None
     assert guard.try_acquire("127.0.0.2", max_concurrency=1, requests_per_minute=10) == "busy"
 
-    guard.release()
+    guard.release(first)
     assert guard.try_acquire("127.0.0.2", max_concurrency=1, requests_per_minute=10) is None
 
 
 def test_admission_limits_each_peer_within_a_minute():
     guard = QueryAdmission()
 
-    assert (
-        guard.try_acquire("127.0.0.1", max_concurrency=3, requests_per_minute=2, now=100.0) is None
-    )
-    guard.release()
-    assert (
-        guard.try_acquire("127.0.0.1", max_concurrency=3, requests_per_minute=2, now=101.0) is None
-    )
-    guard.release()
+    first = guard.acquire("127.0.0.1", max_concurrency=3, requests_per_minute=2, now=100.0)
+    assert first.reason is None
+    guard.release(first)
+    second = guard.acquire("127.0.0.1", max_concurrency=3, requests_per_minute=2, now=101.0)
+    assert second.reason is None
+    guard.release(second)
     assert (
         guard.try_acquire("127.0.0.1", max_concurrency=3, requests_per_minute=2, now=102.0)
         == "rate_limited"
@@ -34,6 +33,18 @@ def test_admission_limits_each_peer_within_a_minute():
     assert (
         guard.try_acquire("127.0.0.2", max_concurrency=3, requests_per_minute=2, now=102.0) is None
     )
+
+
+def test_local_admission_ignores_a_stale_or_unknown_lease():
+    guard = QueryAdmission()
+    first = guard.acquire("127.0.0.1", max_concurrency=2, requests_per_minute=10)
+    second = guard.acquire("127.0.0.2", max_concurrency=2, requests_per_minute=10)
+
+    guard.release(AdmissionLease(token="not-an-active-lease"))
+
+    assert guard.try_acquire("127.0.0.3", max_concurrency=2, requests_per_minute=10) == "busy"
+    guard.release(first)
+    guard.release(second)
 
 
 class FakeRedis:

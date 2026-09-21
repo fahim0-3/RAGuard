@@ -1,6 +1,7 @@
 from src.reranking.cross_encoder import (
     CrossEncoderReranker,
     RerankResult,
+    close_reranker,
     get_reranker,
     is_reranker_model_loaded,
     loaded_reranker_model_name,
@@ -12,6 +13,7 @@ from src.reranking.provider import ConfiguredReranker, VoyageReranker, VoyageRer
 
 __all__ = [
     "CrossEncoderReranker",
+    "close_reranker",
     "ConfiguredReranker",
     "RerankResult",
     "get_reranker",

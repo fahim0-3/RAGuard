@@ -30,7 +30,7 @@ from src.generation.schemas import ClaimCitation
 from src.retrieval.types import RetrievedChunk
 from src.self_healing.citation_verifier import verify_citations
 from src.self_healing.claims import Claim, extract_claims
-from src.self_healing.entailment import judge_claim
+from src.self_healing.entailment import judge_claim, judge_claim_batch
 from src.self_healing.state import VerificationResult
 
 logger = logging.getLogger(__name__)
@@ -247,6 +247,7 @@ class EntailmentVerifier:
         missing_evidence: list[str] = []
         uncited = 0
         confidences: list[float] = []
+        batch_candidates: list[tuple[Claim, str, int]] = []
 
         for claim in claims:
             passages = "\n\n".join(
@@ -264,6 +265,7 @@ class EntailmentVerifier:
                         "supported": False,
                         "method": "no-citation",
                         "reason": "claim carries no usable citation",
+                        "_confidence": 0.0,
                     }
                 )
                 continue
@@ -279,6 +281,7 @@ class EntailmentVerifier:
                         "supported": False,
                         "method": "exact-token",
                         "reason": f"not in cited evidence: {missing}",
+                        "_confidence": 0.0,
                     }
                 )
                 continue
@@ -292,16 +295,21 @@ class EntailmentVerifier:
 
             # 4. Entailment, for every claim the verbatim check did not settle.
             if not supported and self.use_llm:
-                verdict = judge_claim(claim.claim_text, passages, chain=self.chain)
-                if verdict is not None:
-                    method = "entailment"
-                    supported = verdict.supported
-                    confidence = verdict.confidence
-                    reason = verdict.reason or "judged by entailment"
+                if self.chain is None:
+                    batch_candidates.append((claim, passages, len(verdicts)))
+                    method = "entailment-pending"
+                    reason = "awaiting batched entailment judgement"
                 else:
-                    method = "entailment-unavailable"
-                    supported = False
-                    reason = "entailment judge unavailable"
+                    verdict = judge_claim(claim.claim_text, passages, chain=self.chain)
+                    if verdict is not None:
+                        method = "entailment"
+                        supported = verdict.supported
+                        confidence = verdict.confidence
+                        reason = verdict.reason or "judged by entailment"
+                    else:
+                        method = "entailment-unavailable"
+                        supported = False
+                        reason = "entailment judge unavailable"
             elif not supported:
                 method = "entailment-required"
                 supported = False
@@ -310,10 +318,43 @@ class EntailmentVerifier:
             if not supported:
                 unsupported.append(claim.claim_text)
 
-            confidences.append(confidence)
             verdicts.append(
-                {**claim.to_dict(), "supported": supported, "method": method, "reason": reason}
+                {
+                    **claim.to_dict(),
+                    "supported": supported,
+                    "method": method,
+                    "reason": reason,
+                    "_confidence": confidence,
+                }
             )
+
+        if batch_candidates:
+            batch = judge_claim_batch(
+                [(claim.claim_text, passages) for claim, passages, _ in batch_candidates]
+            )
+            for index, (_claim, _passages, verdict_index) in enumerate(batch_candidates):
+                verdict = batch[index] if batch is not None else None
+                if verdict is None:
+                    verdicts[verdict_index].update(
+                        supported=False,
+                        method="entailment-unavailable",
+                        reason="entailment batch judge unavailable",
+                        _confidence=0.0,
+                    )
+                else:
+                    verdicts[verdict_index].update(
+                        supported=verdict.supported,
+                        method="entailment-batch",
+                        reason=verdict.reason or "judged by batched entailment",
+                        _confidence=verdict.confidence,
+                    )
+
+        # Recompute after possible batch updates so a supported batched claim
+        # is never left in the unsupported result from its provisional state.
+        unsupported = [
+            str(verdict["claim_text"]) for verdict in verdicts if not verdict["supported"]
+        ]
+        confidences = [float(verdict.pop("_confidence", 0.0)) for verdict in verdicts]
 
         supported_count = sum(1 for v in verdicts if v["supported"])
         all_supported = supported_count == len(verdicts)

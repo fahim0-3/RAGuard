@@ -9,6 +9,14 @@ groups:
         annotations:
           summary: RAGuard is rejecting more than one query per second.
 
+      - alert: RAGuardSustainedSaturation
+        expr: (raguard_query_concurrency_limit > 0) and on() (max_over_time(raguard_queries_in_flight[10m]) >= raguard_query_concurrency_limit)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: RAGuard has sustained its configured admitted-query capacity for ten minutes.
+
       - alert: RAGuardWorkflowFailuresHigh
         expr: sum(rate(raguard_queries_failed_total[5m])) / clamp_min(sum(rate(raguard_queries_admitted_total[5m])), 1) > 0.05
         for: 10m
@@ -24,3 +32,19 @@ groups:
           severity: warning
         annotations:
           summary: RAGuard p95 completed-query latency exceeds five seconds.
+
+      - alert: RAGuardDeadlineExhaustionHigh
+        expr: sum(rate(raguard_request_budget_exhausted_total[10m])) / clamp_min(sum(rate(raguard_queries_completed_total[10m])), 1) > 0.02
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 2% of completed RAGuard queries exhaust their request deadline or call budget.
+
+      - alert: RAGuardProviderFailuresHigh
+        expr: sum(rate(raguard_query_failures_total{reason="provider_unavailable"}[10m])) / clamp_min(sum(rate(raguard_queries_admitted_total[10m])), 1) > 0.02
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: More than 2% of admitted RAGuard queries fail because the provider is unavailable.

@@ -89,9 +89,9 @@ def test_split_is_deterministic_stratified_and_keeps_locked_held_out_data():
         }
         for index, (outcome, case_type, category) in enumerate(
             [
-                *(('answer', 'normal', 'refund') for _ in range(5)),
-                *(('abstain', 'unanswerable', 'near_miss') for _ in range(3)),
-                *(('abstain', 'prompt_injection', 'security') for _ in range(3)),
+                *(("answer", "normal", "refund") for _ in range(5)),
+                *(("abstain", "unanswerable", "near_miss") for _ in range(3)),
+                *(("abstain", "prompt_injection", "security") for _ in range(3)),
             ],
             start=1,
         )
@@ -252,9 +252,7 @@ def test_held_out_data_never_participates_in_threshold_selection():
         "bge_permits": False,
     }
 
-    selected, fit = choose_safety_first_profile(
-        [*calibration, held_out], metadata=metadata
-    )
+    selected, fit = choose_safety_first_profile([*calibration, held_out], metadata=metadata)
 
     assert selected is not None
     assert fit["selection_case_ids"] == ["cal-answer", "cal-abstain"]

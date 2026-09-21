@@ -87,9 +87,7 @@ def select_cases(cases: list[dict[str, Any]], limit: int) -> list[dict[str, Any]
     return eligible if limit == 0 else eligible[:limit]
 
 
-def select_explicit_cases(
-    cases: list[dict[str, Any]], case_ids: list[str]
-) -> list[dict[str, Any]]:
+def select_explicit_cases(cases: list[dict[str, Any]], case_ids: list[str]) -> list[dict[str, Any]]:
     """Select requested golden cases exactly once and in supplied order."""
     duplicates = sorted({case_id for case_id in case_ids if case_ids.count(case_id) > 1})
     if duplicates:
@@ -298,6 +296,7 @@ def run(
         raise RuntimeError("set VOYAGE_API_KEY")
 
     retriever = get_hybrid_retriever()
+
     def emit(message: str) -> None:
         if progress is None:
             print(message, flush=True)
@@ -877,7 +876,12 @@ def main() -> int:
         return 2
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(json.dumps({"safety_gate": report["safety_gate"], "recommendation": report["recommendation"]}, indent=2))
+    print(
+        json.dumps(
+            {"safety_gate": report["safety_gate"], "recommendation": report["recommendation"]},
+            indent=2,
+        )
+    )
     print(f"report: {args.output}")
     return 0
 

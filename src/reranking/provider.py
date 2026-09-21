@@ -74,6 +74,12 @@ class VoyageReranker:
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         )
 
+    def close(self) -> None:
+        """Release the underlying persistent HTTP client at service shutdown."""
+        close = getattr(self._client, "close", None)
+        if callable(close):
+            close()
+
     @staticmethod
     def _backoff_seconds(retry_number: int) -> float:
         """Short bounded backoff; a query never waits unboundedly on retries."""
@@ -226,6 +232,8 @@ class ConfiguredReranker:
         self._voyage_factory = voyage_factory
         self._local: CrossEncoderReranker | None = None
         self._local_lock = threading.Lock()
+        self._voyage_instance: VoyageReranker | None = None
+        self._voyage_lock = threading.Lock()
 
     def _local_reranker(self) -> CrossEncoderReranker:
         if self._local is None:
@@ -270,12 +278,23 @@ class ConfiguredReranker:
         return self._local_reranker().warmup()
 
     def _voyage(self) -> VoyageReranker:
-        return self._voyage_factory(
-            api_key=self.settings.voyage_api_key or "",
-            model_name=self.settings.voyage_rerank_model,
-            timeout_seconds=self.settings.hosted_rerank_timeout_seconds,
-            max_retries=self.settings.hosted_rerank_max_retries,
-        )
+        if self._voyage_instance is None:
+            with self._voyage_lock:
+                if self._voyage_instance is None:
+                    self._voyage_instance = self._voyage_factory(
+                        api_key=self.settings.voyage_api_key or "",
+                        model_name=self.settings.voyage_rerank_model,
+                        timeout_seconds=self.settings.hosted_rerank_timeout_seconds,
+                        max_retries=self.settings.hosted_rerank_max_retries,
+                    )
+        return self._voyage_instance
+
+    def close(self) -> None:
+        """Close resources that are owned by this configured adapter."""
+        with self._voyage_lock:
+            voyage, self._voyage_instance = self._voyage_instance, None
+        if voyage is not None:
+            voyage.close()
 
     def _local_result(
         self,
@@ -314,7 +333,9 @@ class ConfiguredReranker:
         candidate_top_k: int,
     ) -> RerankResult:
         """Attach BGE confidence scores without letting BGE reorder Voyage evidence."""
-        scored = self._local_reranker().score_fixed_order_with_diagnostics(query, voyage_result.chunks)
+        scored = self._local_reranker().score_fixed_order_with_diagnostics(
+            query, voyage_result.chunks
+        )
         if not scored.reranker_used:
             # A hosted order without BGE-compatible confidence values must not
             # reach the evidence pipeline. Re-run the established local path;

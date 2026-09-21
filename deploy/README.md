@@ -1,4 +1,9 @@
-# Production deployment contract
+# Production deployment contract (disabled by default)
+
+No production deployment is authorized for the current project state. Tag
+pushes do not publish images and `render.yaml` disables automatic deployment.
+The material below is retained as a future manual-release contract; do not run
+it without separate approval.
 
 RAGuard deploys as two independent services:
 
@@ -11,9 +16,11 @@ The API image explicitly installs CPU-only PyTorch. Generic Linux PyTorch can
 pull several gigabytes of CUDA libraries despite `MODEL_DEVICE=cpu`; the build
 must not remove `TORCH_INDEX_URL` unless the deployment intentionally uses a GPU.
 
-Before deployment, populate secrets in the provider's secret manager and run:
+Before deployment, populate secrets in the provider's secret manager, run the
+explicit schema migration with the administrative database role, then run:
 
 ```bash
+python -m src.maintenance.migrate
 python -m scripts.production_preflight --check-database --check-redis
 ```
 
@@ -64,7 +71,8 @@ single-instance runtime storage and disable zero-downtime deploys. Scale the API
 vertically; moving model weights to shared object storage or baking them into an
 image is required before horizontal scaling.
 
-Create the Blueprint from the GitHub repository, provide `DATABASE_URL` and
-`GOOGLE_API_KEY` when prompted, and review the paid API/disk estimate before
-applying it. Render generates `ADMIN_API_KEY`; copy that value into an approved
-secret manager if operators need the protected endpoints.
+Create the Blueprint from the GitHub repository, provide `DATABASE_URL`,
+`DATABASE_ADMIN_URL`, and `GOOGLE_API_KEY` when prompted, and review the paid
+API/disk estimate before applying it. Render generates `ADMIN_API_KEY`; copy
+that value into an approved secret manager if operators need the protected
+endpoints.

@@ -201,13 +201,7 @@ def voyage_confidence(scores: list[float], profile: VoyageConfidenceProfile) -> 
 
 def top_score_threshold_candidates(records: list[dict[str, Any]]) -> list[float]:
     """Return observed Voyage rank-one values only; lower ranks never tune the gate."""
-    return sorted(
-        {
-            float(scores[0])
-            for record in records
-            if (scores := record.get("scores", []))
-        }
-    )
+    return sorted({float(scores[0]) for record in records if (scores := record.get("scores", []))})
 
 
 def profile_candidates(
@@ -228,9 +222,7 @@ def profile_candidates(
             min_supporting_chunks=2,
             ambiguous_margin_max=0.1,
             minimum_answer_recall=minimum_answer_recall,
-            maximum_abstention_false_permit_rate=(
-                maximum_abstention_false_permit_rate
-            ),
+            maximum_abstention_false_permit_rate=(maximum_abstention_false_permit_rate),
             calibration_split="stratified-v2",
             development_split="stratified-v2",
             held_out_split="stratified-v2-locked",
@@ -253,9 +245,7 @@ def decision_metrics(
         permits = voyage_confidence(record["scores"], profile).deterministic_eligible
         expected_outcome = record["expected_outcome"]
         if expected_outcome not in {"answer", "abstain"}:
-            raise ValueError(
-                "Voyage confidence calibration accepts only answer/abstain outcomes"
-            )
+            raise ValueError("Voyage confidence calibration accepts only answer/abstain outcomes")
         expected_answer = expected_outcome == "answer"
         expected_abstain = expected_outcome == "abstain"
         true_positive += int(permits and expected_answer)
@@ -286,9 +276,7 @@ def decision_metrics(
     }
 
 
-def case_diagnostic(
-    record: dict[str, Any], profile: VoyageConfidenceProfile
-) -> dict[str, Any]:
+def case_diagnostic(record: dict[str, Any], profile: VoyageConfidenceProfile) -> dict[str, Any]:
     """Persist the complete provider-aware confidence view for one case."""
     confidence = voyage_confidence(record["scores"], profile)
     return {
@@ -305,12 +293,8 @@ def case_diagnostic(
         "confidence_predicates": {
             "has_scores": confidence.has_scores,
             "top_score_at_least_permit_min": confidence.top_score_passes,
-            "support_count_at_least_diagnostic_min": (
-                confidence.support_count_diagnostic_passes
-            ),
-            "margin_above_diagnostic_ambiguity_max": (
-                confidence.margin_diagnostic_passes
-            ),
+            "support_count_at_least_diagnostic_min": (confidence.support_count_diagnostic_passes),
+            "margin_above_diagnostic_ambiguity_max": (confidence.margin_diagnostic_passes),
             "binary_eligibility_is_top_score_only": True,
         },
         "voyage_permits": confidence.deterministic_eligible,
@@ -337,9 +321,7 @@ def choose_safety_first_profile(
     if not 0.0 <= minimum_answer_recall <= 1.0:
         raise ValueError("minimum_answer_recall must be between zero and one")
     if not 0.0 <= maximum_abstention_false_permit_rate <= 1.0:
-        raise ValueError(
-            "maximum_abstention_false_permit_rate must be between zero and one"
-        )
+        raise ValueError("maximum_abstention_false_permit_rate must be between zero and one")
 
     selection_records = [
         record for record in records if record.get("split", "calibration") == "calibration"
@@ -357,8 +339,7 @@ def choose_safety_first_profile(
         evaluated.append((candidate, metrics))
         if (
             metrics["answer_recall"] >= minimum_answer_recall
-            and metrics["abstention_false_permit_rate"]
-            <= maximum_abstention_false_permit_rate
+            and metrics["abstention_false_permit_rate"] <= maximum_abstention_false_permit_rate
         ):
             valid.append((candidate, metrics))
 
@@ -378,8 +359,7 @@ def choose_safety_first_profile(
             key=lambda item: (
                 max(
                     0.0,
-                    item[1]["abstention_false_permit_rate"]
-                    - maximum_abstention_false_permit_rate,
+                    item[1]["abstention_false_permit_rate"] - maximum_abstention_false_permit_rate,
                 )
                 + max(0.0, minimum_answer_recall - item[1]["answer_recall"]),
                 *selection_key(item),
@@ -398,9 +378,7 @@ def choose_safety_first_profile(
         ),
         "constraints": {
             "minimum_answer_recall": minimum_answer_recall,
-            "maximum_abstention_false_permit_rate": (
-                maximum_abstention_false_permit_rate
-            ),
+            "maximum_abstention_false_permit_rate": (maximum_abstention_false_permit_rate),
         },
         "candidate_count": len(candidates),
         "valid_candidate_count": len(valid),
@@ -417,8 +395,6 @@ def ranking_metrics(
 ) -> dict[str, float]:
     """Use the established Hit/Recall/MRR implementation at the top-five cut."""
     scored = [
-        score_case("voyage", case, results[case["id"]])
-        for case in cases
-        if case["id"] in results
+        score_case("voyage", case, results[case["id"]]) for case in cases if case["id"] in results
     ]
     return aggregate(scored, {case["id"]: case for case in cases})

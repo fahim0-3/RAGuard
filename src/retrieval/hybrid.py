@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -107,17 +108,27 @@ class HybridRetriever:
         self, query: str, top_k: int | None = None
     ) -> RetrievalDiagnostics:
         """Retrieve and return every intermediate stage."""
-        started = time.perf_counter()
-        embedding = embed_query(query)
-        query_embedding_ms = elapsed_ms(started)
 
-        started = time.perf_counter()
-        dense_hits = dense_search(embedding, self.dense_top_k)
-        vector_search_ms = elapsed_ms(started)
+        # BM25 uses an already resident immutable index and has no dependency
+        # on the embedding or database request.  Start it immediately so its
+        # CPU time is hidden behind the much more expensive dense path.
+        def sparse_search() -> tuple[list[RetrievedChunk], float]:
+            sparse_started = time.perf_counter()
+            hits = get_bm25_index().search(query, self.sparse_top_k)
+            return hits, elapsed_ms(sparse_started)
 
-        started = time.perf_counter()
-        sparse_hits = get_bm25_index().search(query, self.sparse_top_k)
-        bm25_search_ms = elapsed_ms(started)
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="bm25-search") as executor:
+            sparse_future = executor.submit(sparse_search)
+
+            started = time.perf_counter()
+            embedding = embed_query(query)
+            query_embedding_ms = elapsed_ms(started)
+
+            started = time.perf_counter()
+            dense_hits = dense_search(embedding, self.dense_top_k)
+            vector_search_ms = elapsed_ms(started)
+
+            sparse_hits, bm25_search_ms = sparse_future.result()
 
         started = time.perf_counter()
         fused = reciprocal_rank_fusion({"dense": dense_hits, "sparse": sparse_hits}, k=self.rrf_k)
@@ -129,8 +140,7 @@ class HybridRetriever:
         deduplication_ms = elapsed_ms(started)
 
         logger.debug(
-            "query=%r dense=%d sparse=%d fused=%d dropped=%d final=%d",
-            query,
+            "hybrid retrieval completed dense=%d sparse=%d fused=%d dropped=%d final=%d",
             len(dense_hits),
             len(sparse_hits),
             len(fused),

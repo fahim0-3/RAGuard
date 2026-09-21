@@ -179,3 +179,29 @@ def test_replace_source_chunks_deletes_and_upserts_before_one_commit(monkeypatch
         "upsert",
         "transaction_commit",
     ]
+
+
+def test_upsert_updates_the_document_identifier(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class Cursor:
+        def executemany(self, sql, rows):
+            captured["sql"] = sql
+            captured["rows"] = rows
+
+    written = vector_store._upsert_chunks(  # noqa: SLF001 - SQL contract test
+        Cursor(),
+        [
+            {
+                "source": "policy.txt",
+                "doc_id": "NEW-002",
+                "chunk_index": 0,
+                "content": "updated",
+                "metadata": {},
+                "embedding": [0.1],
+            }
+        ],
+    )
+
+    assert written == 1
+    assert "SET doc_id = EXCLUDED.doc_id" in str(captured["sql"])

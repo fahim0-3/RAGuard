@@ -17,10 +17,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -31,13 +35,23 @@ jobs:
           enable-cache: true
       - run: uv sync --locked --no-default-groups --only-group dev --no-install-project
       - run: uv run --frozen --no-sync ruff check .
-      - name: Formatting (advisory)
-        continue-on-error: true
-        run: uv run --frozen --no-sync ruff format --diff .
+      - name: Formatting
+        run: uv run --frozen --no-sync ruff format --check .
+      - name: Compile production modules
+        run: uv run --frozen --no-sync python -m compileall -q api src
+      - name: Static type check
+        run: uv run --frozen --no-sync python -m mypy
+      - name: Dependency vulnerability scan
+        # Audit the locked dependency graph rather than the editable project
+        # install; the local `raguard` package is intentionally unpublished.
+        run: |
+          uv export --locked --all-groups --no-emit-project --format requirements-txt > requirements-audit.txt
+          uv run --frozen --no-sync pip-audit --requirement requirements-audit.txt --strict
 
   fast-tests:
     name: Fast tests (no models, no database)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -65,11 +79,15 @@ jobs:
         # `not slow` is redundant today (every slow test is also heavy) but is
         # stated so the gate does not silently acquire a 40-minute job if that
         # pairing is ever broken.
-        run: uv run --frozen --no-sync pytest -m "not integration and not heavy and not llm and not slow and not evaluation" -v
+        run: >-
+          uv run --frozen --no-sync pytest
+          -m "not integration and not heavy and not llm and not slow and not evaluation"
+          --cov=api --cov=src --cov-report=term-missing --cov-fail-under=70 -v
 
   evaluation-gate:
     name: Golden dataset regression gate
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [lint, fast-tests]
     services:
       postgres:

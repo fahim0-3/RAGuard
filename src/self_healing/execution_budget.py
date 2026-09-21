@@ -20,6 +20,7 @@ __all__ = [
     "LLMCallPermit",
     "current_budget",
     "ensure_time_remaining",
+    "remaining_seconds",
     "request_budget",
     "reserve_llm_call",
 ]
@@ -73,6 +74,14 @@ class ExecutionBudget:
         with self._lock:
             if self.deadline_monotonic - self.clock() <= 0:
                 self._exhaust("deadline", stage)
+
+    def remaining_seconds(self, stage: str) -> float:
+        """Return positive time left, recording a deadline exhaustion otherwise."""
+        with self._lock:
+            remaining = self.deadline_monotonic - self.clock()
+            if remaining <= 0:
+                self._exhaust("deadline", stage)
+            return remaining
 
     def reserve_llm_call(self, stage: str, default_timeout_s: float) -> LLMCallPermit:
         """Atomically admit one real provider call and bound its timeout."""
@@ -140,3 +149,9 @@ def ensure_time_remaining(stage: str) -> None:
     budget = current_budget()
     if budget is not None:
         budget.ensure_time_remaining(stage)
+
+
+def remaining_seconds(stage: str) -> float | None:
+    """Return remaining request time, or ``None`` outside a graph request."""
+    budget = current_budget()
+    return budget.remaining_seconds(stage) if budget is not None else None

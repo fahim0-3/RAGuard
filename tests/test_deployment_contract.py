@@ -41,7 +41,11 @@ def load_contract_yaml(path: Path):
 
 
 def test_deployment_yaml_contains_no_duplicate_keys():
-    paths = [ROOT / "render.yaml", *(ROOT / ".github" / "workflows").glob("*.yml")]
+    paths = [
+        ROOT / "render.yaml",
+        ROOT / "monitoring" / "prometheus-alerts.yml",
+        *(ROOT / ".github" / "workflows").glob("*.yml"),
+    ]
 
     for path in paths:
         assert load_contract_yaml(path) is not None, path
@@ -85,6 +89,8 @@ def test_release_workflow_builds_both_images_after_contract_tests():
     components = {item["component"] for item in jobs["images"]["strategy"]["matrix"]["include"]}
     assert components == {"api", "frontend"}
     assert jobs["smoke"]["needs"] == "images"
+    assert "push" not in workflow[True]
+    assert "inputs.publish_images" in jobs["images"]["steps"][2]["if"]
 
 
 def test_production_environment_template_contains_no_real_secret():
@@ -112,7 +118,9 @@ def test_render_blueprint_has_the_required_remote_resources():
     }
     assert "maxShutdownDelaySeconds" not in api
     assert api["healthCheckPath"] == "/health"
+    assert api["autoDeployTrigger"] == "off"
     assert frontend["dockerfilePath"] == "./Dockerfile.frontend"
+    assert frontend["autoDeployTrigger"] == "off"
     assert admission["type"] == "keyvalue"
     assert admission["ipAllowList"] == []
 

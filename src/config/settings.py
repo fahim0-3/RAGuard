@@ -30,13 +30,18 @@ class Settings(BaseSettings):
     # Leave empty to reuse DATABASE_URL (the normal local/direct setup). Keeping
     # this separate lets a future pooled runtime URL avoid migration traffic.
     database_admin_url: str = Field(default="", repr=False)
-    vector_dimension: int = 1024  # BGE-M3 dense output width.
+    vector_dimension: int = Field(default=1024, ge=1, le=16_384)  # BGE-M3 dense output width.
     # Bound API readiness and query waits during a managed-database outage.
     # The pool retries connection creation in the background for longer than a
     # single request is allowed to wait.
     db_pool_timeout_s: float = Field(default=10.0, ge=1.0, le=60.0)
     db_connect_timeout_s: int = Field(default=10, ge=1, le=60)
     db_reconnect_timeout_s: float = Field(default=30.0, ge=5.0, le=300.0)
+    # Keep database work bounded by the request budget even when a query plan,
+    # network path, or managed database becomes unhealthy.
+    db_statement_timeout_s: float = Field(default=30.0, ge=0.1, le=300.0)
+    db_pool_min_size: int = Field(default=1, ge=1, le=128)
+    db_pool_max_size: int = Field(default=4, ge=1, le=128)
 
     # --- Runtime environment ---
     runtime_environment: Literal["development", "test", "production"] = Field(
@@ -94,7 +99,7 @@ class Settings(BaseSettings):
     # so switching provider does not require editing a model ID.
     llm_model: str = ""
     llm_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
-    llm_max_output_tokens: int = 1024
+    llm_max_output_tokens: int = Field(default=1024, ge=1, le=16_384)
     llm_request_timeout_s: int = Field(default=60, ge=1)
     llm_max_retries: int = Field(default=2, ge=0, le=5)
 
@@ -103,6 +108,7 @@ class Settings(BaseSettings):
     # Hugging Face model cache. Documents must be re-ingested after switching.
     embedding_provider: Literal["local", "gemini"] = "local"
     gemini_embedding_model: str = "gemini-embedding-001"
+    embedding_request_timeout_s: float = Field(default=30.0, ge=0.1, le=300.0)
     runtime_profile: Literal["full", "local_compact"] = Field(
         default="full",
         validation_alias=AliasChoices("RAGUARD_RUNTIME_PROFILE", "runtime_profile"),
@@ -139,19 +145,19 @@ class Settings(BaseSettings):
 
     # --- Ingestion ---
     data_dir: Path = Path("data/policies")
-    chunk_size: int = 800
-    chunk_overlap: int = 120
+    chunk_size: int = Field(default=800, ge=1, le=100_000)
+    chunk_overlap: int = Field(default=120, ge=0, le=99_999)
 
     # --- Evaluation ---
     # Configurable so a larger dataset can be evaluated without a code change.
     golden_dataset_path: Path = Path("src/evaluation/golden_dataset.json")
 
     # --- Retrieval ---
-    dense_top_k: int = 20
-    sparse_top_k: int = 20
-    fusion_top_k: int = 20
-    rerank_top_k: int = 5
-    rrf_k: int = 60
+    dense_top_k: int = Field(default=20, ge=1, le=10_000)
+    sparse_top_k: int = Field(default=20, ge=1, le=10_000)
+    fusion_top_k: int = Field(default=20, ge=1, le=10_000)
+    rerank_top_k: int = Field(default=5, ge=1, le=10_000)
+    rrf_k: int = Field(default=60, ge=1, le=10_000)
 
     # --- Reranking ---
     reranker_enabled: bool = True
@@ -165,6 +171,9 @@ class Settings(BaseSettings):
     # by default: this avoids GPU memory spikes and CPU thread oversubscription
     # under the API's multi-query admission limit. It never changes ranking.
     reranker_max_concurrency: int = Field(default=1, ge=1, le=16)
+    # Time a request may wait for the resident cross-encoder.  This protects
+    # the graph deadline when several requests arrive at once.
+    reranker_queue_timeout_s: float = Field(default=15.0, ge=0.01, le=300.0)
     # Zero leaves PyTorch's process-wide thread setting unchanged. Set a
     # positive value only after a CPU benchmark on the target host.
     reranker_cpu_threads: int = Field(default=0, ge=0, le=128)
@@ -244,6 +253,22 @@ class Settings(BaseSettings):
     def _request_budget_fits_admission_lease(self) -> Settings:
         if self.graph_request_timeout_s >= self.admission_lease_seconds:
             raise ValueError("graph_request_timeout_s must be lower than admission_lease_seconds")
+        if self.db_pool_min_size > self.db_pool_max_size:
+            raise ValueError("db_pool_min_size must not exceed db_pool_max_size")
+        if self.db_pool_max_size > self.query_max_concurrency:
+            raise ValueError("db_pool_max_size must not exceed query_max_concurrency")
+        if self.chunk_overlap >= self.chunk_size:
+            raise ValueError("chunk_overlap must be lower than chunk_size")
+        if self.fusion_top_k > self.dense_top_k + self.sparse_top_k:
+            raise ValueError("fusion_top_k cannot exceed the dense and sparse candidate total")
+        if self.rerank_candidate_top_k > self.fusion_top_k:
+            raise ValueError("rerank_candidate_top_k must not exceed fusion_top_k")
+        if self.rerank_top_k > self.rerank_candidate_top_k:
+            raise ValueError("rerank_top_k must not exceed rerank_candidate_top_k")
+        if self.db_statement_timeout_s > self.graph_request_timeout_s:
+            raise ValueError("db_statement_timeout_s must not exceed graph_request_timeout_s")
+        if self.embedding_request_timeout_s > self.graph_request_timeout_s:
+            raise ValueError("embedding_request_timeout_s must not exceed graph_request_timeout_s")
         if self.embedding_provider == "gemini" and self.reranker_provider == "local":
             # Hosted embeddings remove the local sentence-transformers stack.
             # Keep reranking hosted-only as well rather than silently pulling a

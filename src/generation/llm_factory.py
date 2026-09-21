@@ -225,13 +225,10 @@ _BUILDERS = {
 }
 
 
-@lru_cache(maxsize=96)
+@lru_cache(maxsize=16)
 def _get_chat_model(
     provider: str,
     role: Role = "generator",
-    *,
-    timeout_s: float | None = None,
-    max_retries: int | None = None,
 ) -> Any:
     builder = _BUILDERS.get(provider)
     if builder is None:
@@ -239,7 +236,7 @@ def _get_chat_model(
             f"Unknown LLM_PROVIDER {provider!r}; expected one of {sorted(_BUILDERS)}"
         )
     logger.info("Building %s model for role=%s", provider, role)
-    return builder(role, timeout_s=timeout_s, max_retries=max_retries)
+    return builder(role)
 
 
 def get_chat_model(
@@ -248,10 +245,23 @@ def get_chat_model(
     timeout_s: float | None = None,
     max_retries: int | None = None,
 ) -> Any:
-    """Return a model for the route selected for this invocation."""
-    return _get_chat_model(
-        _selected_provider(), role, timeout_s=timeout_s, max_retries=max_retries
-    )
+    """Return a model for the route selected for this invocation.
+
+    Provider constructors capture their HTTP timeout.  Caching a continuously
+    changing remaining request budget both defeats reuse and can retain dozens
+    of clients.  Stable default clients are cached; deadline-bound calls are
+    deliberately built uncached so their timeout can never be rounded upward
+    or silently ignored.
+    """
+    provider = _selected_provider()
+    if timeout_s is None and max_retries is None:
+        return _get_chat_model(provider, role)
+    builder = _BUILDERS.get(provider)
+    if builder is None:
+        raise LLMProviderError(
+            f"Unknown LLM_PROVIDER {provider!r}; expected one of {sorted(_BUILDERS)}"
+        )
+    return builder(role, timeout_s=timeout_s, max_retries=max_retries)
 
 
 def uses_native_structured_output() -> bool:

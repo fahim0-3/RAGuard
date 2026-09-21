@@ -289,6 +289,25 @@ SAFETY_GATES: list[Gate] = [
     ),
 ]
 
+# Retrieval latency is a release criterion, not merely report decoration.
+# Values are the documented warmed retrieval-only SLOs in baseline.json.
+LATENCY_GATES: list[Gate] = [
+    Gate(
+        "retrieval_latency_p50_ms",
+        1200.0,
+        "Warmed retrieval-only SLO from src/evaluation/baseline.json",
+        "latency",
+        direction="max",
+    ),
+    Gate(
+        "retrieval_latency_p95_ms",
+        2500.0,
+        "Warmed retrieval-only SLO from src/evaluation/baseline.json",
+        "latency",
+        direction="max",
+    ),
+]
+
 
 def all_gates() -> list[Gate]:
-    return [*RETRIEVAL_GATES, *GENERATION_GATES, *SAFETY_GATES]
+    return [*RETRIEVAL_GATES, *GENERATION_GATES, *SAFETY_GATES, *LATENCY_GATES]

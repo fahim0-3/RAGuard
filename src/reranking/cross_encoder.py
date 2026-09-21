@@ -32,9 +32,9 @@ system. Every failure path returns the RRF ordering untouched with
 `reranker_used=False`, and the RRF scores are preserved exactly. A failed load
 is remembered so a 2 GB download is not retried once per query.
 
-Cost warning: the primary model is ~568 M parameters. On CPU expect roughly 0.3
-to 1.0 seconds per 20 candidates. Keep `RERANK_CANDIDATE_TOP_K` modest unless a
-GPU is available.
+Cost warning: the primary model is ~568 M parameters. Its CPU cost depends
+substantially on hardware and policy length; measure it on the deployment host
+before raising `RERANK_CANDIDATE_TOP_K`.
 """
 
 from __future__ import annotations
@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.config import get_settings
 from src.retrieval.types import RetrievedChunk
+from src.self_healing.execution_budget import ExecutionBudgetExceeded, remaining_seconds
 
 if TYPE_CHECKING:  # pragma: no cover
     from sentence_transformers import CrossEncoder
@@ -65,6 +66,7 @@ __all__ = [
     "reset_reranker",
     "sigmoid",
     "warmup_reranker_model",
+    "close_reranker",
 ]
 
 
@@ -331,6 +333,7 @@ class CrossEncoderReranker:
         Exactly one `predict` call is made for the complete supplied list.
         """
 
+        settings = get_settings()
         candidates = list(chunks)
 
         def degraded(failure: str | None, stage: str | None) -> RerankResult:
@@ -358,12 +361,25 @@ class CrossEncoderReranker:
         inference_started = queued_at
         cpu_started = time.process_time()
         try:
-            with self._inference_limiter:
+            remaining = remaining_seconds("rerank")
+        except ExecutionBudgetExceeded:
+            return degraded("request deadline exceeded", "deadline")
+        acquired = self._inference_limiter.acquire(
+            timeout=min(getattr(settings, "reranker_queue_timeout_s", 15.0), remaining)
+            if remaining is not None
+            else getattr(settings, "reranker_queue_timeout_s", 15.0)
+        )
+        if not acquired:
+            return degraded("reranker queue timeout", "queue")
+        try:
+            try:
                 inference_started = time.perf_counter()
                 cpu_started = time.process_time()
                 scores = self._predict(model, [(query, chunk.content) for chunk in candidates])
                 inference_latency_ms = (time.perf_counter() - inference_started) * 1000.0
                 cpu_time_ms = (time.process_time() - cpu_started) * 1000.0
+            finally:
+                self._inference_limiter.release()
         except Exception as exc:  # noqa: BLE001 - scoring must fail closed
             logger.error("Cross-encoder fixed-order scoring failed: %s", exc)
             return degraded(f"{type(exc).__name__}: {exc}", "inference")
@@ -373,6 +389,9 @@ class CrossEncoderReranker:
             message = f"model returned {len(scores)} scores for {len(candidates)} candidates"
             logger.error("Cross-encoder contract violated: %s", message)
             return degraded(message, "inference")
+
+        if any(not math.isfinite(score) for score in scores):
+            return degraded("model returned non-finite score", "inference")
 
         # Do not sort.  BGE is a confidence scorer here, not a second reranker.
         scored = [
@@ -435,12 +454,25 @@ class CrossEncoderReranker:
         inference_started = queued_at
         cpu_started = time.process_time()
         try:
-            with self._inference_limiter:
+            remaining = remaining_seconds("rerank")
+        except ExecutionBudgetExceeded:
+            return degraded("request deadline exceeded", "deadline")
+        acquired = self._inference_limiter.acquire(
+            timeout=min(getattr(settings, "reranker_queue_timeout_s", 15.0), remaining)
+            if remaining is not None
+            else getattr(settings, "reranker_queue_timeout_s", 15.0)
+        )
+        if not acquired:
+            return degraded("reranker queue timeout", "queue")
+        try:
+            try:
                 inference_started = time.perf_counter()
                 cpu_started = time.process_time()
                 scores = self._predict(model, [(query, chunk.content) for chunk in candidates])
                 inference_latency_ms = (time.perf_counter() - inference_started) * 1000.0
                 cpu_time_ms = (time.process_time() - cpu_started) * 1000.0
+            finally:
+                self._inference_limiter.release()
         except Exception as exc:  # noqa: BLE001 - inference failure degrades to RRF
             logger.error("Cross-encoder inference failed: %s", exc)
             return degraded(f"{type(exc).__name__}: {exc}", "inference")
@@ -453,12 +485,19 @@ class CrossEncoderReranker:
 
         # `replace` copies every other field, so the BM25, vector, and RRF
         # scores and the retriever ranks survive reranking intact.
+        if any(not math.isfinite(score) for score in scores):
+            return degraded("model returned non-finite score", "inference")
         scored = [
             replace(chunk, rerank_score=score, normalised_rerank_score=sigmoid(score))
             for chunk, score in zip(candidates, scores, strict=True)
         ]
         # Ties break on chunk_id, matching RRF, so repeated runs are identical.
-        scored.sort(key=lambda c: (-(c.rerank_score or float("-inf")), c.chunk_id))
+        scored.sort(
+            key=lambda c: (
+                -(c.rerank_score if c.rerank_score is not None else float("-inf")),
+                c.chunk_id,
+            )
+        )
 
         return RerankResult(
             query=query,
@@ -541,7 +580,17 @@ def reset_reranker() -> None:
     """Drop the cached reranker so new settings take effect."""
     global _reranker
     with _lock:
+        close = getattr(_reranker, "close", None)
+        if callable(close):
+            close()
         _reranker = None
+
+
+def close_reranker() -> None:
+    """Release persistent provider resources during application shutdown."""
+    close = getattr(_reranker, "close", None)
+    if callable(close):
+        close()
 
 
 def warmup_reranker_model() -> bool:

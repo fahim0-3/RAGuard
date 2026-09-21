@@ -245,6 +245,14 @@ Run static checks and the full test suite:
 .\.venv\Scripts\python.exe -m pytest
 ```
 
+For a local-only concurrency check, first start the API on a loopback address,
+then run the bounded harness below. It rejects public URLs and never deploys or
+writes request/response content.
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.load_test --requests 20 --concurrency 2
+```
+
 Validated native v1 results:
 
 - Neon PostgreSQL connection passed.
@@ -266,13 +274,14 @@ generation/safety evaluation records answer, abstain, clarify, escalate, and
 citation outcomes. Regression gates are kept separate from historical measured
 reports so an unavailable layer is reported as blocked rather than as a pass.
 
-### Production versus evaluation-only research
+### Answerability and evaluation research
 
-The production graph uses the BGE-compatible confidence path described above.
-Voyage confidence calibration and the enhanced answerability/evidence-ablation
-experiments live only in `src/evaluation/` and `scripts/`. That research is
-frozen for v1, does not run from FastAPI, and **the enhanced candidate is not a
-production feature**.
+The production graph uses the condition-aware answerability contract before
+generation. It requires evidence for every material condition in the request
+and refuses cross-policy exception transfer, exclusive-choice conflation, and
+unsupported threshold overrides. Voyage confidence calibration remains an
+offline evaluation artifact; hosted relevance scores never become BGE
+confidence values in serving.
 
 ## Optional Docker deployment
 
@@ -286,6 +295,11 @@ docker compose --profile full up --build -d
 The API image runs Uvicorn on port 8000 and exposes `/health` for its container
 health check. Native deployment remains the validated v1 path.
 
+Automatic production release is disabled: tag pushes do not publish images and
+the Render Blueprint sets both services to manual deployment. Local Docker
+Compose is the only supported execution target until an explicit production
+approval is given.
+
 ## Known limitations
 
 - The demonstration corpus is small (22 chunks across six policy documents),
@@ -296,12 +310,15 @@ health check. Native deployment remains the validated v1 path.
 - The default local BGE reranker is CPU-intensive on modest hardware.
 - Redis is needed for coordinated admission control across multiple API
   replicas; the native single-process launcher uses local admission control.
+- Request deadlines and disconnect cleanup are cooperative around synchronous
+  local inference. A hard mid-inference cancellation guarantee requires a
+  separate worker/process boundary.
 
 ## Future work
 
 - Validate on a larger, versioned policy corpus and broader held-out safety
   dataset.
-- Run a separately approved production evaluation before considering any
-  evaluation-only answerability work for promotion.
-- Add deployment-specific load, observability, and recovery testing for a
-  multi-replica environment.
+- Expand local/staging evaluation with a larger held-out safety dataset before
+  changing answerability thresholds or prompts.
+- Design a worker/process execution boundary only if hard cancellation is a
+  required product guarantee.

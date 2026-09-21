@@ -306,11 +306,14 @@ def run(
 
     # Ambiguous and high-risk questions route before retrieval, so they are
     # reported but excluded from reranker confidence threshold fitting.
-    cases = select_cases([
-        case
-        for case in load_golden_dataset()
-        if case["expected_outcome"] in {"answer", "abstain"}
-    ], limit)
+    cases = select_cases(
+        [
+            case
+            for case in load_golden_dataset()
+            if case["expected_outcome"] in {"answer", "abstain"}
+        ],
+        limit,
+    )
     if not cases:
         raise RuntimeError("no calibration/evaluation cases selected")
     split_assignments = stratified_split_assignments(cases)
@@ -375,7 +378,9 @@ def run(
         bge_latency_ms = (time.perf_counter() - bge_started) * 1000.0
         if not local_result.reranker_used:
             raise RuntimeError(f"reranker unavailable for {case['id']}: {local_result.failure}")
-        scores = [voyage_result.provider_raw_scores[chunk_id] for chunk_id in voyage_result.provider_order]
+        scores = [
+            voyage_result.provider_raw_scores[chunk_id] for chunk_id in voyage_result.provider_order
+        ]
         bge_permits, bge_detail = _bge_permits(case["question"], local_result.chunks)
         records.append(
             {
@@ -420,9 +425,7 @@ def run(
         calibration,
         metadata=_metadata(settings),
         minimum_answer_recall=minimum_calibration_answer_recall,
-        maximum_abstention_false_permit_rate=(
-            maximum_calibration_abstention_false_permit_rate
-        ),
+        maximum_abstention_false_permit_rate=(maximum_calibration_abstention_false_permit_rate),
     )
     if profile is not None:
         profile = replace(
@@ -437,12 +440,8 @@ def run(
             raise RuntimeError("no Voyage top scores available for calibration")
         evaluation_profile = VoyageConfidenceProfile(**diagnostic_candidate)
 
-    calibration_metrics, calibration_disagreements = _evaluate(
-        calibration, evaluation_profile
-    )
-    development_metrics, development_disagreements = _evaluate(
-        development, evaluation_profile
-    )
+    calibration_metrics, calibration_disagreements = _evaluate(calibration, evaluation_profile)
+    development_metrics, development_disagreements = _evaluate(development, evaluation_profile)
     held_out_metrics, held_out_disagreements = _evaluate(held_out, evaluation_profile)
     all_diagnostics = [case_diagnostic(record, evaluation_profile) for record in records]
     # No automatic GO is permitted: the full-graph citation evaluation remains
@@ -470,9 +469,7 @@ def run(
         "production_changed": False,
         "recommendation": recommendation,
         "profile": profile.to_dict() if profile is not None else None,
-        "diagnostic_profile": (
-            evaluation_profile.to_dict() if profile is None else None
-        ),
+        "diagnostic_profile": (evaluation_profile.to_dict() if profile is None else None),
         "fit_metrics": fit_metrics,
         "splits": split_composition(cases, split_assignments),
         "latency_ms": {
@@ -504,8 +501,12 @@ def run(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Calibrate Voyage confidence without serving changes")
-    parser.add_argument("--allow-remote", action="store_true", help="confirm live Voyage document transfer")
+    parser = argparse.ArgumentParser(
+        description="Calibrate Voyage confidence without serving changes"
+    )
+    parser.add_argument(
+        "--allow-remote", action="store_true", help="confirm live Voyage document transfer"
+    )
     parser.add_argument(
         "--with-llm",
         action="store_true",
@@ -548,7 +549,9 @@ def main() -> int:
         help="maximum pre-grader permit rate on abstention calibration cases (default: 0.0)",
     )
     parser.add_argument(
-        "--output", type=Path, default=PROJECT_ROOT / "reports" / "voyage_confidence_calibration.json"
+        "--output",
+        type=Path,
+        default=PROJECT_ROOT / "reports" / "voyage_confidence_calibration.json",
     )
     args = parser.parse_args()
     if not args.allow_remote:
@@ -559,9 +562,7 @@ def main() -> int:
         or args.voyage_retry_base_seconds < 0
         or args.voyage_request_delay_seconds < 0
         or not 0.0 <= args.minimum_calibration_answer_recall <= 1.0
-        or not 0.0
-        <= args.maximum_calibration_abstention_false_permit_rate
-        <= 1.0
+        or not 0.0 <= args.maximum_calibration_abstention_false_permit_rate <= 1.0
     ):
         parser.error(
             "--limit and Voyage retry/pacing values must be non-negative; "
@@ -574,9 +575,7 @@ def main() -> int:
             voyage_max_retries=args.voyage_max_retries,
             voyage_retry_base_seconds=args.voyage_retry_base_seconds,
             voyage_request_delay_seconds=args.voyage_request_delay_seconds,
-            minimum_calibration_answer_recall=(
-                args.minimum_calibration_answer_recall
-            ),
+            minimum_calibration_answer_recall=(args.minimum_calibration_answer_recall),
             maximum_calibration_abstention_false_permit_rate=(
                 args.maximum_calibration_abstention_false_permit_rate
             ),
@@ -586,7 +585,11 @@ def main() -> int:
         return 2
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(json.dumps({"recommendation": report["recommendation"], "held_out": report["held_out"]}, indent=2))
+    print(
+        json.dumps(
+            {"recommendation": report["recommendation"], "held_out": report["held_out"]}, indent=2
+        )
+    )
     print(f"report: {args.output}")
     return 0
 
