@@ -45,7 +45,11 @@ jobs:
         # Audit the locked dependency graph rather than the editable project
         # install; the local `raguard` package is intentionally unpublished.
         run: |
-          uv export --locked --all-groups --no-emit-project --format requirements-txt > requirements-audit.txt
+          # The local-models group pins CPU-only Torch from the PyTorch index.
+          # pip-audit recreates an environment from PyPI, where that build
+          # label is unavailable, so audit the production, dev, and frontend
+          # dependency surfaces installed by this job instead.
+          uv export --locked --no-emit-project --no-default-groups --group dev --group frontend --format requirements-txt > requirements-audit.txt
           uv run --frozen --no-sync pip-audit --requirement requirements-audit.txt --strict
 
   fast-tests:

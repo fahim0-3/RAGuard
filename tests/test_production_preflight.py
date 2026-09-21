@@ -12,6 +12,7 @@ def production_settings():
         _env_file=None,
         RAGUARD_ENVIRONMENT="production",
         database_url="postgresql://user:secret@db.example.net/raguard?sslmode=require",
+        database_admin_url="postgresql://admin:secret@admin.example.net/raguard?sslmode=require",
         google_api_key="g" * 32,
         admin_api_key="a" * 48,
         cors_allow_origins="https://app.example.net",
