@@ -25,7 +25,7 @@ A normal retrieval-augmented application can retrieve related text and still pro
 - **Evidence-first generation:** deterministic signals and structured evidence grading block unsupported generation.
 - **Citation verification:** validates cited labels, policy identifiers, and numeric claims against retrieved passages.
 - **Resilient model routing:** configurable Groq, Gemini, OpenRouter, and Ollama routing with token budgets, circuit breakers, cooldowns, and bounded fallbacks.
-- **Reranking choices:** local cross-encoder privacy path or opt-in Voyage hosted reranking with a local fallback.
+- **Reranking choices:** local cross-encoder privacy path, or explicit opt-in hosted reranking with Voyage or Cohere, a bounded hosted fallback, and local/RRF recovery.
 - **Operational visibility:** per-stage timings, provider/fallback metadata, readiness checks, protected metrics, and a repeatable latency benchmark.
 - **Evaluation assets:** regression tests, a golden dataset, and a separate holdout set for expanded synthetic policies.
 
@@ -69,7 +69,7 @@ These figures describe one local warm run, not a cloud-service guarantee. Provid
 | --- | --- |
 | API and workflow | Python, FastAPI, Pydantic, LangGraph |
 | Retrieval | PostgreSQL, pgvector, BM25, BGE-M3, RRF |
-| Reranking | SentenceTransformers cross-encoder, optional Voyage AI |
+| Reranking | SentenceTransformers cross-encoder, optional Voyage AI or Cohere |
 | Generation | Groq, Gemini, OpenRouter, or Ollama |
 | Frontend | Streamlit |
 | Quality | Pytest, Ruff, golden and holdout evaluations |
@@ -126,9 +126,27 @@ EMBEDDING_MODEL=BAAI/bge-m3
 RERANKER_PROVIDER=voyage
 RERANKER_REMOTE_ALLOWED=true
 VOYAGE_API_KEY=your-key
+VOYAGE_RERANK_MODEL=rerank-2.5-lite
 ```
 
-See [.env.example](.env.example) for the complete, non-secret configuration contract. Set `RERANKER_PROVIDER=local` if you do not want policy passages to be sent to Voyage.
+See [.env.example](.env.example) for the complete, non-secret configuration contract. Set `RERANKER_PROVIDER=local` if policy passages must remain on the machine.
+
+### Hosted reranking with a fallback
+
+Hosted reranking is always opt-in: `RERANKER_REMOTE_ALLOWED=true` and a key are both required before policy passages are sent to a remote reranker. Use one hosted provider as the primary and optionally configure the other as its fallback:
+
+```dotenv
+RERANKER_PROVIDER=voyage
+RERANKER_HOSTED_FALLBACK=cohere
+RERANKER_REMOTE_ALLOWED=true
+
+VOYAGE_API_KEY=your-voyage-key
+VOYAGE_RERANK_MODEL=rerank-2.5-lite
+COHERE_API_KEY=your-cohere-key
+COHERE_RERANK_MODEL=rerank-v3.5
+```
+
+If Voyage is rate limited, unavailable, cooling down, or not configured, RAGuard tries the configured Cohere fallback. If neither hosted provider can run, it uses the configured `RERANKER_FALLBACK_PROVIDER` (`local` by default, or `rrf`). You can also make Cohere the primary provider and Voyage the fallback. Set `RERANKER_HOSTED_FALLBACK=none` to keep a single hosted provider.
 
 ### 3. Prepare the database and ingest the corpus
 
@@ -154,6 +172,18 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-native.ps1 -Task frontend
 ```
 
 Open `http://127.0.0.1:8501` in a browser. The API listens on `http://127.0.0.1:8000`.
+
+### Local model cache and offline starts
+
+On Windows, `run-native.ps1` first uses the repository cache at `.cache\\raguard-models` when it contains downloaded models. If that cache is empty, it reuses an existing Hugging Face cache in the user profile; only a machine with neither cache downloads the models into the repository cache.
+
+After a successful online start, use `-OfflineModels` to prevent model downloads:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run-native.ps1 -Task api -OfflineModels
+```
+
+Use offline mode only when the required embedding and reranker models already exist in the cache selected by the launcher.
 
 ### 5. Confirm readiness
 
@@ -252,7 +282,7 @@ Administrative endpoints require the `X-Admin-Key` request header and the `ADMIN
 - **In-memory dense index:** appropriate for the compact demonstration corpus; pgvector remains the persistent source of truth.
 - **Bounded self-healing:** retries and regeneration can improve recovery but cannot loop indefinitely or create unbounded cost.
 - **Provider budgets and circuit breakers:** prevent a rate-limited provider from repeatedly inflating response latency.
-- **Offline model cache:** enables predictable restarts after the first model download and avoids repeated Hugging Face downloads.
+- **Cache-aware local startup:** the Windows launcher uses the repository cache when populated, otherwise reuses an existing Hugging Face cache before downloading models again.
 - **Strict evidence gates:** correctness is preferred over an unsupported, confident-sounding answer.
 
 ## Limitations and next steps

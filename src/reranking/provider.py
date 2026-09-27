@@ -31,6 +31,7 @@ from src.retrieval.types import RetrievedChunk
 logger = logging.getLogger(__name__)
 
 VOYAGE_RERANK_URL = "https://api.voyageai.com/v1/rerank"
+COHERE_RERANK_URL = "https://api.cohere.com/v2/rerank"
 
 __all__ = [
     "ConfiguredReranker",
@@ -39,8 +40,12 @@ __all__ = [
 ]
 
 
-class VoyageRerankerError(RuntimeError):
-    """Controlled operational failure. Its message is always safe to expose."""
+class HostedRerankerError(RuntimeError):
+    """Controlled operational failure. Its message is always safe to expose.
+
+    The code is prefixed with the provider name, so a trace says which hosted
+    reranker refused and why without carrying its response body.
+    """
 
     def __init__(self, code: str, *, retryable: bool = False) -> None:
         super().__init__(code)
@@ -48,14 +53,37 @@ class VoyageRerankerError(RuntimeError):
         self.retryable = retryable
 
 
-class VoyageReranker:
-    """Small HTTP adapter for Voyage's rerank endpoint.
+#: The original name, kept because tests and callers still raise and catch it.
+VoyageRerankerError = HostedRerankerError
+
+
+class HostedReranker:
+    """Shared HTTP adapter for a hosted rerank endpoint.
+
+    Voyage and Cohere differ only in the URL, the name of the top-k field, and
+    the key their results arrive under; retries, failure classification and
+    result parsing are identical and live here. A subclass supplies those three
+    differences and its own name.
 
     The client is constructed without making a network request and contains no
     logging hooks, so the Authorization header and document contents cannot be
     written to application logs by this module. Tests inject a mock client and
-    never contact Voyage.
+    never contact a provider.
     """
+
+    #: Set by each subclass.
+    provider: str = ""
+    endpoint: str = ""
+
+    def _payload(self, query: str, documents: list[str], top_k: int) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @staticmethod
+    def _results(body: dict[str, Any]) -> Any:
+        raise NotImplementedError
+
+    def _error(self, reason: str, *, retryable: bool = False) -> HostedRerankerError:
+        return HostedRerankerError(f"{self.provider}_{reason}", retryable=retryable)
 
     def __init__(
         self,
@@ -92,27 +120,27 @@ class VoyageReranker:
         started = time.perf_counter()
         while True:
             try:
-                response = self._client.post(VOYAGE_RERANK_URL, json=payload)
+                response = self._client.post(self.endpoint, json=payload)
             except httpx.TimeoutException:
-                failure = VoyageRerankerError("voyage_timeout", retryable=True)
+                failure = self._error("timeout", retryable=True)
             except httpx.HTTPError:
-                failure = VoyageRerankerError("voyage_unavailable", retryable=True)
+                failure = self._error("unavailable", retryable=True)
             else:
                 status_code = int(getattr(response, "status_code", 0))
                 if status_code == 429:
-                    failure = VoyageRerankerError("voyage_rate_limited", retryable=True)
+                    failure = self._error("rate_limited", retryable=True)
                 elif status_code >= 500:
-                    failure = VoyageRerankerError("voyage_unavailable", retryable=True)
+                    failure = self._error("unavailable", retryable=True)
                 elif status_code < 200 or status_code >= 300:
-                    failure = VoyageRerankerError("voyage_request_rejected")
+                    failure = self._error("request_rejected")
                 else:
                     try:
                         body = response.json()
                     except (TypeError, ValueError):
-                        failure = VoyageRerankerError("voyage_malformed_response")
+                        failure = self._error("malformed_response")
                     else:
                         if not isinstance(body, dict):
-                            failure = VoyageRerankerError("voyage_malformed_response")
+                            failure = self._error("malformed_response")
                         else:
                             return body, retries, (time.perf_counter() - started) * 1000.0
 
@@ -124,19 +152,18 @@ class VoyageReranker:
             self._sleep(self._backoff_seconds(retries))
             retries += 1
 
-    @staticmethod
     def _parse_order(
-        body: dict[str, Any], candidates: list[RetrievedChunk], top_k: int
+        self, body: dict[str, Any], candidates: list[RetrievedChunk], top_k: int
     ) -> tuple[list[RetrievedChunk], dict[int, float], list[int]]:
-        data = body.get("data")
+        data = self._results(body)
         if not isinstance(data, list) or len(data) < top_k:
-            raise VoyageRerankerError("voyage_malformed_response")
+            raise self._error("malformed_response")
 
         indexed: list[tuple[int, float]] = []
         seen: set[int] = set()
         for item in data:
             if not isinstance(item, dict):
-                raise VoyageRerankerError("voyage_malformed_response")
+                raise self._error("malformed_response")
             index = item.get("index")
             score = item.get("relevance_score")
             if (
@@ -148,7 +175,7 @@ class VoyageReranker:
                 or isinstance(score, bool)
                 or not isinstance(score, (int, float))
             ):
-                raise VoyageRerankerError("voyage_malformed_response")
+                raise self._error("malformed_response")
             seen.add(index)
             indexed.append((index, float(score)))
 
@@ -172,23 +199,18 @@ class VoyageReranker:
                 query=query,
                 chunks=[],
                 model_name=self.model_name,
-                requested_provider="voyage",
-                actual_provider="voyage",
+                requested_provider=self.provider,
+                actual_provider=self.provider,
                 confidence_score_source="unverified_hosted_order_only",
             )
 
-        payload = {
-            "model": self.model_name,
-            "query": query,
-            "documents": [chunk.content for chunk in candidates],
-            "top_k": effective_top_k,
-        }
+        payload = self._payload(query, [chunk.content for chunk in candidates], effective_top_k)
         try:
             body, retries, latency_ms = self._request(payload)
             ordered, raw_scores, provider_order = self._parse_order(
                 body, candidates, effective_top_k
             )
-        except VoyageRerankerError as exc:
+        except HostedRerankerError as exc:
             return RerankResult(
                 query=query,
                 chunks=candidates[:effective_top_k],
@@ -196,8 +218,8 @@ class VoyageReranker:
                 candidate_count=len(candidates),
                 failure=exc.code,
                 failure_stage="hosted",
-                requested_provider="voyage",
-                actual_provider="voyage",
+                requested_provider=self.provider,
+                actual_provider=self.provider,
                 hosted_latency_ms=float(getattr(exc, "latency_ms", 0.0)),
                 retry_count=int(getattr(exc, "retry_count", 0)),
                 confidence_score_source="unverified_hosted_order_only",
@@ -213,10 +235,48 @@ class VoyageReranker:
             retry_count=retries,
             provider_raw_scores=raw_scores,
             provider_order=provider_order,
-            requested_provider="voyage",
-            actual_provider="voyage",
+            requested_provider=self.provider,
+            actual_provider=self.provider,
             confidence_score_source="unverified_hosted_order_only",
         )
+
+
+class VoyageReranker(HostedReranker):
+    """Voyage's rerank endpoint: results under `data`, top-k named `top_k`."""
+
+    provider = "voyage"
+    endpoint = VOYAGE_RERANK_URL
+
+    def _payload(self, query: str, documents: list[str], top_k: int) -> dict[str, Any]:
+        return {
+            "model": self.model_name,
+            "query": query,
+            "documents": documents,
+            "top_k": top_k,
+        }
+
+    @staticmethod
+    def _results(body: dict[str, Any]) -> Any:
+        return body.get("data")
+
+
+class CohereReranker(HostedReranker):
+    """Cohere's v2 rerank endpoint: results under `results`, top-k named `top_n`."""
+
+    provider = "cohere"
+    endpoint = COHERE_RERANK_URL
+
+    def _payload(self, query: str, documents: list[str], top_k: int) -> dict[str, Any]:
+        return {
+            "model": self.model_name,
+            "query": query,
+            "documents": documents,
+            "top_n": top_k,
+        }
+
+    @staticmethod
+    def _results(body: dict[str, Any]) -> Any:
+        return body.get("results")
 
 
 def _await_prescore(future: Future[RerankResult] | None) -> RerankResult | None:
@@ -266,10 +326,10 @@ def _project_prescored(
 
 #: Seconds Voyage is skipped after each transient failure. A rejected
 #: request or malformed body is not here: those are not outages.
-_VOYAGE_COOLDOWN_S: dict[str, float] = {
-    "voyage_timeout": 30.0,
-    "voyage_unavailable": 60.0,
-    "voyage_rate_limited": 60.0,
+_HOSTED_COOLDOWN_S: dict[str, float] = {
+    "timeout": 30.0,
+    "unavailable": 60.0,
+    "rate_limited": 60.0,
 }
 
 
@@ -281,15 +341,18 @@ class ConfiguredReranker:
         *,
         settings: Any | None = None,
         local_factory: Callable[[], CrossEncoderReranker] = CrossEncoderReranker,
-        voyage_factory: Callable[..., VoyageReranker] = VoyageReranker,
+        voyage_factory: Callable[..., HostedReranker] = VoyageReranker,
+        cohere_factory: Callable[..., HostedReranker] = CohereReranker,
     ) -> None:
         self.settings = settings or get_settings()
         self._local_factory = local_factory
         self._voyage_factory = voyage_factory
+        self._cohere_factory = cohere_factory
         self._local: CrossEncoderReranker | None = None
         self._local_lock = threading.Lock()
-        self._voyage_instance: VoyageReranker | None = None
+        self._hosted_instances: dict[str, HostedReranker] = {}
         self._voyage_lock = threading.Lock()
+        self._cooling_until: dict[str, float] = {}
         self._prescore_executor: ThreadPoolExecutor | None = None
         self._prescore_lock = threading.Lock()
         self._voyage_cooling_until = 0.0
@@ -302,9 +365,27 @@ class ConfiguredReranker:
                     self._local = self._local_factory()
         return self._local
 
+    def _hosted_configured(self, provider: str) -> bool:
+        """Remote use is explicit: a key alone never sends policy text out."""
+        if not self.settings.reranker_remote_allowed:
+            return False
+        if provider == "voyage":
+            return bool(self.settings.voyage_api_key)
+        if provider == "cohere":
+            return bool(getattr(self.settings, "cohere_api_key", None))
+        return False
+
     @property
     def _voyage_configured(self) -> bool:
-        return bool(self.settings.reranker_remote_allowed and self.settings.voyage_api_key)
+        return self._hosted_configured("voyage")
+
+    def _hosted_chain(self) -> list[str]:
+        """Hosted providers to try, in order, without repeats."""
+        chain = [self.settings.reranker_provider]
+        second = getattr(self.settings, "reranker_hosted_fallback", "none")
+        if second not in ("none", "", None) and second not in chain:
+            chain.append(second)
+        return [p for p in chain if p != "local"]
 
     @property
     def is_model_loaded(self) -> bool:
@@ -340,41 +421,63 @@ class ConfiguredReranker:
             return self._voyage_configured and self._local_reranker().warmup()
         return self._local_reranker().warmup()
 
-    def _voyage(self) -> VoyageReranker:
-        if self._voyage_instance is None:
-            with self._voyage_lock:
-                if self._voyage_instance is None:
-                    self._voyage_instance = self._voyage_factory(
+    def _hosted(self, provider: str) -> HostedReranker:
+        """Build and cache one adapter per hosted provider."""
+        existing = self._hosted_instances.get(provider)
+        if existing is not None:
+            return existing
+        with self._voyage_lock:
+            existing = self._hosted_instances.get(provider)
+            if existing is None:
+                if provider == "cohere":
+                    existing = self._cohere_factory(
+                        api_key=getattr(self.settings, "cohere_api_key", "") or "",
+                        model_name=self.settings.cohere_rerank_model,
+                        timeout_seconds=self.settings.hosted_rerank_timeout_seconds,
+                        max_retries=self.settings.hosted_rerank_max_retries,
+                    )
+                else:
+                    existing = self._voyage_factory(
                         api_key=self.settings.voyage_api_key or "",
                         model_name=self.settings.voyage_rerank_model,
                         timeout_seconds=self.settings.hosted_rerank_timeout_seconds,
                         max_retries=self.settings.hosted_rerank_max_retries,
                     )
-        return self._voyage_instance
+                self._hosted_instances[provider] = existing
+        return existing
+
+    def _voyage(self) -> HostedReranker:
+        return self._hosted("voyage")
 
     def close(self) -> None:
         """Close resources that are owned by this configured adapter."""
         with self._voyage_lock:
-            voyage, self._voyage_instance = self._voyage_instance, None
-        if voyage is not None:
-            voyage.close()
+            adapters = list(self._hosted_instances.values())
+            self._hosted_instances.clear()
+        for adapter in adapters:
+            adapter.close()
         with self._prescore_lock:
             executor, self._prescore_executor = self._prescore_executor, None
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
 
-    def _voyage_cooling(self) -> bool:
+    def _hosted_cooling(self, provider: str) -> bool:
         if not getattr(self.settings, "hosted_rerank_cooldown_enabled", False):
             return False
-        return self._clock() < self._voyage_cooling_until
+        return self._clock() < self._cooling_until.get(provider, 0.0)
 
-    def _record_voyage_outcome(self, result: RerankResult) -> None:
+    def _record_hosted_outcome(self, provider: str, result: RerankResult) -> None:
         if result.reranker_used:
-            self._voyage_cooling_until = 0.0
+            self._cooling_until.pop(provider, None)
             return
-        cooldown = _VOYAGE_COOLDOWN_S.get(result.failure or "")
+        # Codes are provider-prefixed; the cooldown table is not.
+        reason = (result.failure or "").removeprefix(f"{provider}_")
+        cooldown = _HOSTED_COOLDOWN_S.get(reason)
         if cooldown is not None:
-            self._voyage_cooling_until = self._clock() + cooldown
+            self._cooling_until[provider] = self._clock() + cooldown
+
+    def _voyage_cooling(self) -> bool:
+        return self._hosted_cooling("voyage")
 
     def _start_prescore(
         self, query: str, candidates: list[RetrievedChunk]
@@ -439,8 +542,9 @@ class ConfiguredReranker:
         top_k: int,
         candidate_top_k: int,
         prescored: RerankResult | None = None,
+        provider: str = "voyage",
     ) -> RerankResult:
-        """Attach BGE confidence scores without letting BGE reorder Voyage evidence."""
+        """Attach BGE confidence scores without letting BGE reorder hosted evidence."""
         scored = _project_prescored(prescored, voyage_result.chunks)
         if scored is None:
             scored = self._local_reranker().score_fixed_order_with_diagnostics(
@@ -455,7 +559,7 @@ class ConfiguredReranker:
                 all_chunks,
                 top_k=top_k,
                 candidate_top_k=candidate_top_k,
-                requested_provider="voyage",
+                requested_provider=self.settings.reranker_provider,
                 fallback_used=True,
                 hosted_result=voyage_result,
             )
@@ -480,8 +584,8 @@ class ConfiguredReranker:
             inference_latency_ms=scored.inference_latency_ms,
             bge_scoring_latency_ms=scored.bge_scoring_latency_ms,
             bge_scoring_cpu_time_ms=scored.bge_scoring_cpu_time_ms,
-            requested_provider="voyage",
-            actual_provider="voyage",
+            requested_provider=self.settings.reranker_provider,
+            actual_provider=provider,
             hosted_latency_ms=voyage_result.hosted_latency_ms,
             retry_count=voyage_result.retry_count,
             # Voyage scores stay isolated for evaluation; the chunk fields came
@@ -524,36 +628,45 @@ class ConfiguredReranker:
         reranker_started = time.perf_counter()
         hosted_top_k = min(top_k, self.settings.hosted_rerank_top_k)
         hosted_candidates = min(candidate_top_k, self.settings.hosted_rerank_max_candidates)
-        if not self._voyage_configured:
-            blocked = RerankResult(
-                query=query,
-                chunks=chunks[:hosted_top_k],
-                candidate_count=min(len(chunks), hosted_candidates),
-                failure="voyage_remote_not_explicitly_enabled",
-                failure_stage="remote_permission",
-                requested_provider="voyage",
-                actual_provider="voyage",
-                confidence_score_source="none",
-            )
-        elif self._voyage_cooling():
-            # Voyage failed moments ago; the local path is the same fallback
-            # the failure would have reached, minus the hosted timeout.
-            blocked = RerankResult(
-                query=query,
-                chunks=chunks[:hosted_top_k],
-                candidate_count=min(len(chunks), hosted_candidates),
-                failure="voyage_cooling_down",
-                failure_stage="circuit_open",
-                requested_provider="voyage",
-                actual_provider="voyage",
-                confidence_score_source="none",
-            )
-        else:
-            prescore = self._start_prescore(query, chunks[:hosted_candidates])
-            blocked = self._voyage().rerank_with_diagnostics(
+
+        # The local pool scoring is started once and reused whichever hosted
+        # provider answers: it scores the candidate pool, not one provider's
+        # picks, so it is valid for any ordering that comes back.
+        prescore = None
+        blocked: RerankResult | None = None
+        for provider in self._hosted_chain():
+            if not self._hosted_configured(provider):
+                blocked = RerankResult(
+                    query=query,
+                    chunks=chunks[:hosted_top_k],
+                    candidate_count=min(len(chunks), hosted_candidates),
+                    failure=f"{provider}_remote_not_explicitly_enabled",
+                    failure_stage="remote_permission",
+                    requested_provider=provider,
+                    actual_provider=provider,
+                    confidence_score_source="none",
+                )
+                continue
+            if self._hosted_cooling(provider):
+                # It failed moments ago; trying it again would repeat the
+                # timeout before reaching the same fallback.
+                blocked = RerankResult(
+                    query=query,
+                    chunks=chunks[:hosted_top_k],
+                    candidate_count=min(len(chunks), hosted_candidates),
+                    failure=f"{provider}_cooling_down",
+                    failure_stage="circuit_open",
+                    requested_provider=provider,
+                    actual_provider=provider,
+                    confidence_score_source="none",
+                )
+                continue
+            if prescore is None:
+                prescore = self._start_prescore(query, chunks[:hosted_candidates])
+            blocked = self._hosted(provider).rerank_with_diagnostics(
                 query, chunks, top_k=hosted_top_k, candidate_top_k=hosted_candidates
             )
-            self._record_voyage_outcome(blocked)
+            self._record_hosted_outcome(provider, blocked)
             if blocked.reranker_used:
                 hybrid = self._score_voyage_order_with_bge(
                     query,
@@ -562,11 +675,19 @@ class ConfiguredReranker:
                     top_k=top_k,
                     candidate_top_k=candidate_top_k,
                     prescored=_await_prescore(prescore),
+                    provider=provider,
                 )
+                # `hybrid` may itself be a local result, when confidence scoring
+                # failed; only mark a hosted fallback when hosted order was used.
+                used_hosted = hybrid.actual_provider == provider
                 return replace(
                     hybrid,
+                    fallback_used=hybrid.fallback_used
+                    or (used_hosted and provider != self.settings.reranker_provider),
                     total_reranker_latency_ms=(time.perf_counter() - reranker_started) * 1000.0,
                 )
+        _await_prescore(prescore)
+        assert blocked is not None  # the chain always has one entry here
 
         if self.settings.reranker_fallback_provider == "local":
             fallback = self._local_result(

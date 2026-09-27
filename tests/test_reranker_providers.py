@@ -9,7 +9,11 @@ import httpx
 
 from src.config import Settings
 from src.reranking.cross_encoder import RerankResult, sigmoid
-from src.reranking.provider import ConfiguredReranker, VoyageReranker
+from src.reranking.provider import (
+    CohereReranker,
+    ConfiguredReranker,
+    VoyageReranker,
+)
 from src.retrieval.types import RetrievedChunk
 
 
@@ -641,3 +645,143 @@ def test_the_voyage_cooldown_can_be_disabled():
     reranker.rerank_with_diagnostics("q", [chunk(1)])
 
     assert len(client.calls) == 4, "both requests tried Voyage twice"
+
+
+# --------------------------------------------------------------------------
+# Hosted chain: Voyage, then Cohere, then local
+# --------------------------------------------------------------------------
+
+
+def cohere_response(indices: list[int]) -> Response:
+    """Cohere v2 returns `results`, not `data`."""
+    return Response(
+        200,
+        {
+            "results": [
+                {"index": i, "relevance_score": 1.0 - n * 0.1} for n, i in enumerate(indices)
+            ]
+        },
+    )
+
+
+def chained(voyage_client, cohere_client, local=None, **overrides):
+    reranker = ConfiguredReranker(
+        settings=settings(
+            reranker_provider="voyage",
+            reranker_hosted_fallback="cohere",
+            cohere_api_key="c" * 40,
+            cohere_rerank_model="rerank-v3.5",
+            hosted_rerank_top_k=2,
+            hosted_rerank_cooldown_enabled=True,
+            **overrides,
+        ),
+        local_factory=lambda: local or Local(),
+        voyage_factory=lambda **kw: VoyageReranker(client=voyage_client, **kw),
+        cohere_factory=lambda **kw: CohereReranker(client=cohere_client, **kw),
+    )
+    return reranker
+
+
+def test_cohere_takes_over_when_voyage_is_rate_limited():
+    """The case this chain exists for: Voyage allows 3 requests a minute."""
+    voyage = Client([Response(429, {"detail": "rate limited"})])
+    cohere = Client([cohere_response([1, 0])])
+    reranker = chained(voyage, cohere, hosted_rerank_max_retries=0)
+
+    result = reranker.rerank_with_diagnostics("q", [chunk(1), chunk(2)])
+
+    assert result.reranker_used is True
+    assert result.actual_provider == "cohere"
+    assert result.requested_provider == "voyage"
+    assert result.fallback_used is True
+    assert [c.chunk_id for c in result.chunks] == [2, 1], "Cohere's order, not Voyage's"
+
+
+def test_cohere_results_are_parsed_from_its_own_envelope():
+    """Voyage returns `data`; Cohere returns `results`. Both must work."""
+    cohere = Client([cohere_response([0, 1])])
+    reranker = chained(Client([Response(429, {})]), cohere, hosted_rerank_max_retries=0)
+
+    result = reranker.rerank_with_diagnostics("q", [chunk(7), chunk(8)])
+
+    assert [c.chunk_id for c in result.chunks] == [7, 8]
+    assert result.provider_raw_scores == {7: 1.0, 8: 0.9}
+
+
+def test_cohere_is_sent_top_n_not_top_k():
+    cohere = Client([cohere_response([0, 1])])
+    reranker = chained(Client([Response(429, {})]), cohere, hosted_rerank_max_retries=0)
+
+    reranker.rerank_with_diagnostics("q", [chunk(1), chunk(2)])
+
+    _url, body = cohere.calls[0]
+    assert body["top_n"] == 2
+    assert "top_k" not in body
+
+
+def test_both_hosted_providers_failing_falls_back_to_local():
+    local = Local()
+    reranker = chained(
+        Client([Response(429, {})]),
+        Client([Response(429, {})]),
+        local=local,
+        hosted_rerank_max_retries=0,
+    )
+
+    result = reranker.rerank_with_diagnostics("q", [chunk(1), chunk(2)])
+
+    assert result.actual_provider == "local"
+    assert result.fallback_used is True
+    assert local.calls == 1
+
+
+def test_an_unconfigured_cohere_key_is_skipped_without_a_request():
+    """A key alone enables a provider; its absence must not cost a round trip."""
+    cohere = Client([])
+    local = Local()
+    reranker = ConfiguredReranker(
+        settings=settings(
+            reranker_provider="voyage",
+            reranker_hosted_fallback="cohere",
+            cohere_api_key=None,
+            hosted_rerank_max_retries=0,
+        ),
+        local_factory=lambda: local,
+        voyage_factory=lambda **kw: VoyageReranker(client=Client([Response(429, {})]), **kw),
+        cohere_factory=lambda **kw: CohereReranker(client=cohere, **kw),
+    )
+
+    result = reranker.rerank_with_diagnostics("q", [chunk(1)])
+
+    assert cohere.calls == [], "no request to a provider without a key"
+    assert result.actual_provider == "local"
+
+
+def test_a_cooling_voyage_goes_straight_to_cohere():
+    voyage = Client([Response(429, {}), cohere_response([0])])
+    cohere = Client([cohere_response([0]), cohere_response([0])])
+    reranker = chained(voyage, cohere, hosted_rerank_max_retries=0)
+    now = [1_000.0]
+    reranker._clock = lambda: now[0]
+
+    reranker.rerank_with_diagnostics("q", [chunk(1)])
+    voyage_calls_after_first = len(voyage.calls)
+    second = reranker.rerank_with_diagnostics("q", [chunk(1)])
+
+    assert len(voyage.calls) == voyage_calls_after_first, "Voyage was not retried while cooling"
+    assert second.actual_provider == "cohere"
+
+
+def test_no_hosted_fallback_configured_keeps_the_original_behaviour():
+    local = Local()
+    reranker = ConfiguredReranker(
+        settings=settings(
+            reranker_provider="voyage", reranker_hosted_fallback="none", hosted_rerank_max_retries=0
+        ),
+        local_factory=lambda: local,
+        voyage_factory=lambda **kw: VoyageReranker(client=Client([Response(429, {})]), **kw),
+    )
+
+    result = reranker.rerank_with_diagnostics("q", [chunk(1)])
+
+    assert result.actual_provider == "local"

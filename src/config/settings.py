@@ -163,7 +163,19 @@ class Settings(BaseSettings):
     # `local` is the privacy-preserving default.  There is intentionally no
     # automatic provider selection: setting an API key must never by itself
     # cause policy passages to leave this deployment.
-    reranker_provider: Literal["local", "voyage"] = "local"
+    reranker_provider: Literal["local", "voyage", "cohere"] = "local"
+    # A second hosted reranker, tried when the first is rate limited, cooling
+    # down or unconfigured. `none` keeps the single-provider behaviour and
+    # falls straight through to RERANKER_FALLBACK_PROVIDER. Voyage's free
+    # tier allows 3 requests a minute, which one abstaining question can
+    # spend on its own, so a second hosted provider keeps hosted-quality
+    # ordering rather than dropping to the local model.
+    reranker_hosted_fallback: Literal["none", "voyage", "cohere"] = "none"
+    cohere_api_key: str | None = Field(default=None, repr=False)
+    # Cohere's current general-purpose reranker. English-only variants exist
+    # but bring no benefit here: the corpus is short English policy text and
+    # the hosted model decides order only, never the confidence scores.
+    cohere_rerank_model: str = "rerank-v3.5"
     reranker_remote_allowed: bool = False
     voyage_api_key: str | None = Field(default=None, repr=False)
     voyage_rerank_model: str = "rerank-2.5-lite"
