@@ -1,0 +1,23 @@
+# Sample Promotion Policy (PRO-008)
+Document ID: PRO-008
+Version: 1.0
+Effective date: 2026-09-27
+Owner: Commercial Operations
+Status: Synthetic evaluation policy
+
+## 1. Voucher eligibility
+One promotional voucher may be used per order. Vouchers cannot be combined with another voucher, employee discount, or price-match adjustment unless the voucher explicitly says otherwise.
+
+Vouchers apply only to eligible products displayed in the promotion terms. Gift cards, delivery charges, extended warranties, and subscriptions are excluded from voucher discounts.
+
+## 2. Voucher expiry and failed redemption
+Each voucher has its own expiry date. An expired voucher cannot be restored, extended, or exchanged for cash. If a valid voucher fails at checkout, the customer should confirm the code, account, and eligible products before contacting support with a screenshot of the error.
+
+## 3. Returns of discounted orders
+When an item bought with a voucher is returned, the refund is calculated from the amount actually paid for that item. A voucher is not reissued after a partial return. If every eligible item from the original order is returned, a single-use voucher is still not reissued.
+
+## 4. Promotional price adjustments
+We do not refund the difference when an item goes on promotion after an order is placed. A price-match request must be made before purchase and only applies to identical products sold by approved domestic retailers.
+
+## 5. Abuse prevention
+Creating multiple accounts to reuse a new-customer voucher is prohibited. Accounts may be reviewed and promotional orders cancelled when there is evidence of voucher abuse. This review does not affect a customer's statutory rights.

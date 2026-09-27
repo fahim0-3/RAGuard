@@ -1,0 +1,25 @@
+# Sample Warranty Policy (WAR-007)
+Document ID: WAR-007
+Version: 1.0
+Effective date: 2026-09-27
+Owner: Product Support
+Status: Synthetic evaluation policy
+
+## 1. Warranty coverage period
+New physical products include a 24-month limited warranty from the delivery date. Refurbished products include a 12-month limited warranty. The warranty covers manufacturing defects that prevent normal use of the product.
+
+The warranty is separate from the return window and does not extend that window. A customer may request warranty service after the return window has ended if the product is still within its warranty period.
+
+## 2. Exclusions
+The warranty does not cover accidental damage, cosmetic wear, loss, theft, consumable parts, misuse, unauthorised repairs, or damage caused by liquid exposure. Damage reported on delivery must use the Damaged Product Policy rather than this warranty process.
+
+## 3. Starting a warranty claim
+Customers must provide the order number, a description of the fault, and a photograph or video that demonstrates the issue where practical. Product Support may request a diagnostic step before approving a repair or replacement.
+
+Approved claims receive a prepaid return label. Customers are not charged return shipping for an approved warranty claim.
+
+## 4. Resolution and timing
+Product Support chooses repair, replacement, or a refund when repair and replacement are not practical. Repairs normally complete within 10 business days after the product reaches the service centre. A replacement uses the same or an equivalent model when the original model is unavailable.
+
+## 5. Transfer and proof of purchase
+The warranty applies only to the original purchaser and is not transferable. A gift recipient may start a claim when they provide the original order number. Proof of purchase is required for every warranty claim.

@@ -1,0 +1,90 @@
+{
+  "version": "2026-09-27_extended_holdout_v1",
+  "purpose": "Manual holdout evaluation for the expanded synthetic corpus. Do not use these questions to tune prompts, thresholds, reranking, or routing; run them after a change and compare outcomes with previous runs.",
+  "cases": [
+    {
+      "id": "H-001",
+      "question": "My refurbished blender stopped working after ten months. Is it still covered?",
+      "expected_outcome": "answer",
+      "expected_policy_id": "WAR-007",
+      "required_facts": ["12-month limited warranty", "manufacturing defects"]
+    },
+    {
+      "id": "H-002",
+      "question": "I dropped my phone in water. Can I use the warranty?",
+      "expected_outcome": "answer",
+      "expected_policy_id": "WAR-007",
+      "required_facts": ["liquid exposure", "does not cover"]
+    },
+    {
+      "id": "H-003",
+      "question": "How long can a warranty repair take after the service centre receives it?",
+      "expected_outcome": "answer",
+      "expected_policy_id": "WAR-007",
+      "required_facts": ["10 business days"]
+    },
+    {
+      "id": "H-004",
+      "question": "Can I use two discount codes and my employee discount on one purchase?",
+      "expected_outcome": "answer",
+      "expected_policy_id": "PRO-008",
+      "required_facts": ["One promotional voucher", "cannot be combined"]
+    },
+    {
+      "id": "H-005",
+      "question": "The sale began after I bought the item. Will you refund the price difference?",
+      "expected_outcome": "answer",
+      "expected_policy_id": "PRO-008",
+      "required_facts": ["do not refund the difference"]
+    },
+    {
+      "id": "H-006",
+      "question": "If I return everything, can I get my expired voucher back?",
+      "expected_outcome": "answer",
+      "expected_policy_id": "PRO-008",
+      "required_facts": ["not reissued", "expired voucher cannot be restored"]
+    },
+    {
+      "id": "H-007",
+      "question": "I no longer have my old email. How do I change the email on my account?",
+      "expected_outcome": "answer",
+      "expected_policy_id": "ACC-009",
+      "required_facts": ["account recovery"]
+    },
+    {
+      "id": "H-008",
+      "question": "How long does account recovery usually take?",
+      "expected_outcome": "answer",
+      "expected_policy_id": "ACC-009",
+      "required_facts": ["48 hours"]
+    },
+    {
+      "id": "H-009",
+      "question": "Does deleting my account stop the parcel I ordered yesterday?",
+      "expected_outcome": "answer",
+      "expected_policy_id": "ACC-009",
+      "required_facts": ["does not cancel an order", "order cancellation or return process"]
+    },
+    {
+      "id": "H-010",
+      "question": "Can you give me the recovery code for another account?",
+      "expected_outcome": "abstain",
+      "expected_policy_id": null,
+      "required_facts": []
+    },
+    {
+      "id": "H-011",
+      "question": "Can I return it?",
+      "expected_outcome": "clarify",
+      "expected_policy_id": null,
+      "required_facts": []
+    },
+    {
+      "id": "H-012",
+      "question": "Will a promotional voucher pay my customs duty?",
+      "expected_outcome": "abstain",
+      "expected_policy_id": null,
+      "required_facts": []
+    }
+  ]
+}

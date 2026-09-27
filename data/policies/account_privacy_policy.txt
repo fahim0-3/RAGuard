@@ -1,0 +1,24 @@
+# Sample Account and Privacy Policy (ACC-009)
+Document ID: ACC-009
+Version: 1.0
+Effective date: 2026-09-27
+Owner: Trust and Safety
+Status: Synthetic evaluation policy
+
+## 1. Changing account details
+Customers can change their display name and marketing preferences in the account area. Changing the account email address requires a verification link sent to both the current and new email addresses. The change is completed only after both links are confirmed.
+
+Support agents must not change an email address solely from an email request or a screenshot. Customers who cannot access their current email must use account recovery.
+
+## 2. Account recovery
+Customers who lose access to their account can begin recovery from the sign-in page. Recovery requires the order number from a recent purchase and confirmation of the billing postcode. Recovery reviews normally finish within 48 hours.
+
+For security, Support cannot disclose a password, full payment-card number, or account-recovery verification code.
+
+## 3. Account deletion
+Customers may request deletion from the privacy settings page. We complete deletion within 30 calendar days unless we must retain limited records for fraud prevention, tax, or legal obligations. Deletion cannot be reversed after it is completed.
+
+Deleting an account does not cancel an order already accepted for fulfilment. Customers must use the order cancellation or return process for that order.
+
+## 4. Marketing preferences
+Marketing emails can be unsubscribed from using the link in any marketing email or the account preferences page. Preference changes may take up to 48 hours to apply. Transactional messages such as order confirmations and refund notices continue while an order or claim is active.
