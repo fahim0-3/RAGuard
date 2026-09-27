@@ -532,7 +532,7 @@ def test_reranking_layer_is_not_executed_by_the_cli():
 def test_dataset_version_is_recorded_and_current():
     from src.evaluation.metrics import golden_dataset_version
 
-    assert golden_dataset_version() == "2026-08-29_golden_v3"
+    assert golden_dataset_version() == "2026-09-27_golden_v4"
 
 
 def test_historical_measured_reports_are_present_and_unmodified():

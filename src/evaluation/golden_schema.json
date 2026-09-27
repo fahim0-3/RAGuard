@@ -22,7 +22,17 @@
   },
   "$defs": {
     "policy_id": {
-      "enum": ["REF-001", "RET-002", "DMG-003", "DEL-004", "PAY-005", "MAN-006"]
+      "enum": [
+        "REF-001",
+        "RET-002",
+        "DMG-003",
+        "DEL-004",
+        "PAY-005",
+        "MAN-006",
+        "WAR-007",
+        "PRO-008",
+        "ACC-009"
+      ]
     },
     "source_file": {
       "enum": [
@@ -31,7 +41,10 @@
         "damaged_product_policy.txt",
         "delivery_policy.txt",
         "payment_failure_faq.txt",
-        "product_manual_example.txt"
+        "product_manual_example.txt",
+        "warranty_policy.txt",
+        "promotion_policy.txt",
+        "account_privacy_policy.txt"
       ]
     },
     "case": {
@@ -127,7 +140,10 @@
             "near_miss",
             "wrong_policy",
             "insufficient_evidence",
-            "conflicting_evidence"
+            "conflicting_evidence",
+            "warranty",
+            "promotion",
+            "account_privacy"
           ]
         },
         "priority": { "enum": ["critical", "high", "medium", "low"] },

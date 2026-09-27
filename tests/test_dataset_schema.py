@@ -29,7 +29,7 @@ DATASET_PATH = PROJECT_ROOT / "src" / "evaluation" / "golden_dataset.json"
 SCHEMA_PATH = PROJECT_ROOT / "src" / "evaluation" / "golden_schema.json"
 
 EXPECTED_DISTRIBUTION = {
-    "normal": 15,
+    "normal": 18,
     "paraphrase": 10,
     "exact_term": 8,
     "multi_policy": 5,
@@ -38,7 +38,7 @@ EXPECTED_DISTRIBUTION = {
     "prompt_injection": 3,
     "high_risk": 2,
 }
-EXPECTED_TOTAL = 62
+EXPECTED_TOTAL = 65
 
 
 @pytest.fixture(scope="module")
@@ -170,7 +170,7 @@ def test_every_case_documents_where_the_answer_lives(dataset):
 # --------------------------------------------------------------------------
 
 
-def test_dataset_has_expected_v3_case_count(dataset):
+def test_dataset_has_expected_v4_case_count(dataset):
     assert len(dataset["cases"]) == EXPECTED_TOTAL
 
 
@@ -218,7 +218,7 @@ def test_outcome_counts(dataset):
     assert outcomes["clarify"] == 4
     assert outcomes["escalate"] == 2
     assert outcomes["abstain"] == 18, "15 unanswerable + 3 prompt injection"
-    assert outcomes["answer"] == 38
+    assert outcomes["answer"] == 41
 
 
 def test_prompt_injection_cases_declare_what_they_forbid(dataset):
