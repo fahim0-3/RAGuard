@@ -121,6 +121,36 @@ def get_bm25_index() -> BM25Index:
     return _index
 
 
+def is_bm25_index_built() -> bool:
+    """Whether the in-memory index exists, without building it."""
+    return _index is not None
+
+
+def warmup_bm25_index() -> bool:
+    """Build the index at start-up, returning success instead of raising.
+
+    Without this the first user query built it, fetching every chunk from the
+    database inside that request: measured at about 0.7 s against the managed
+    database, charged to whichever customer happened to ask first.
+    """
+    try:
+        get_bm25_index()
+    except Exception:
+        logger.exception("BM25 index warmup failed")
+        return False
+    return True
+
+
+def install_bm25_index(chunks: list[RetrievedChunk]) -> BM25Index:
+    """Build from an already fetched snapshot and swap it in atomically."""
+    global _index
+    index = BM25Index()
+    index.build(chunks)
+    with _lock:
+        _index = index
+    return index
+
+
 def refresh_bm25_index() -> BM25Index:
     """Rebuild after ingestion. The API exposes this as POST /admin/reindex."""
     global _index

@@ -11,7 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -42,6 +42,25 @@ class Settings(BaseSettings):
     db_statement_timeout_s: float = Field(default=30.0, ge=0.1, le=300.0)
     db_pool_min_size: int = Field(default=1, ge=1, le=128)
     db_pool_max_size: int = Field(default=4, ge=1, le=128)
+    # A pooled connection returned within this many seconds is reused
+    # without a validation query. Against a remote managed database each
+    # validation is a full network round trip (measured: ~280 ms, the same
+    # as the vector query itself), so validating a connection used a moment
+    # ago doubled every dense search. Older connections are still checked,
+    # which is what catches the ones a serverless database closed while
+    # idle; a read that still meets a dead socket is retried once on a
+    # validated pool. 240 s stays under Neon's default 5-minute compute
+    # suspend. 0 restores validation on every checkout.
+    db_checkout_validation_idle_s: float = Field(default=240.0, ge=0.0, le=3_600.0)
+    # `memory` serves dense search from vectors held in the API process,
+    # removing the database round trip from every query (pgvector stays the
+    # source of truth and the fallback). `pgvector` queries the database
+    # per request, as before.
+    dense_index_backend: Literal["memory", "pgvector"] = "memory"
+    # How often the in-memory indexes check the table for changes made by
+    # ingestion in another process, and rebuild if it changed. 0 disables
+    # the check; POST /admin/reindex still rebuilds on demand.
+    corpus_refresh_interval_s: float = Field(default=60.0, ge=0.0, le=86_400.0)
 
     # --- Runtime environment ---
     runtime_environment: Literal["development", "test", "production"] = Field(
@@ -52,6 +71,10 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("HF_HOME", "model_cache_dir"),
     )
+    # Once models have been downloaded successfully, avoid Hugging Face cache
+    # validation traffic on every API restart. A missing cache then fails
+    # readiness clearly instead of silently downloading during startup.
+    local_model_offline: bool = False
 
     # --- LLM provider ---
     llm_provider: Literal["gemini", "groq", "openrouter", "ollama"] = "gemini"
@@ -61,34 +84,40 @@ class Settings(BaseSettings):
     # Dynamic mode only: keeps all model calls local and deliberately prevents
     # a hosted fallback from sending private data outside the deployment.
     llm_routing_local_only: bool = False
+    # Dynamic mode only: allow local Ollama as the last resort after every
+    # hosted provider has failed. Off by default for interactive serving:
+    # measured on CPU, that path took 31-40 s per request and still
+    # abstained, so a hosted outage now returns a fast provider_error
+    # instead. Local-first operation is unaffected: LLM_ROUTING_LOCAL_ONLY
+    # or LLM_PROVIDER=ollama still route every call to Ollama.
+    llm_routing_local_fallback: bool = False
     # Dynamic mode only: select Groq at graph entry for an explicitly strict
     # structured-output workload. Evaluation sets the same preference itself.
     llm_routing_strict_structured_output: bool = False
     google_api_key: str | None = None
     groq_api_key: str | None = Field(default=None, repr=False)
     openrouter_api_key: str | None = Field(default=None, repr=False)
-    # Verified against a live key on 2026-08-16. The previous defaults
-    # (gemini-2.5-flash / gemini-2.5-flash-lite) now return 404 "no longer
-    # available to new users", so the system could not generate out of the box.
-    #
-    # Pinned rather than a floating `-latest` alias: evaluation baselines are
-    # only comparable across runs if the model is fixed. `gemini-flash-latest`
-    # was rejected as a default for a second reason — it currently resolves to a
-    # model with a 5 requests/minute free-tier quota, which the retry loop and
-    # the per-claim judge exhaust immediately.
-    gemini_model: str = "gemini-3.1-flash-lite"
-    # Deliberately a different, stable model from the generator. A floating
-    # `-latest` alias makes a regression report change without a code or config
-    # change, which defeats reproducible evaluation. Rebaseline deliberately
-    # whenever this explicit model ID changes.
-    gemini_judge_model: str = "gemini-3.5-flash-lite"
-    # Groq is optional. Its default model supports strict JSON-schema output,
-    # which is used by every structured LLM step in the self-healing graph.
-    groq_model: str = "openai/gpt-oss-20b"
-    groq_judge_model: str = "openai/gpt-oss-20b"
+    # Model IDs are pinned so latency and evaluation comparisons are meaningful.
+    gemini_model: str = "gemini-3.8-flash"
+    gemini_judge_model: str = "gemini-3.8-flash"
+    # Groq is first in the dynamic route because its native structured output
+    # is the most reliable fit for RAGuard's answer and grading schemas.
+    groq_model: str = "openai/gpt-oss-120b"
+    groq_judge_model: str = "openai/gpt-oss-120b"
+    # GPT-OSS can reject valid requests while enforcing a provider-side schema.
+    # Prompt-guided JSON remains validated by the parser and avoids that 400.
+    groq_native_structured_output: bool = False
+    # GPT-OSS reasoning depth. Unset keeps the provider default (medium).
+    # Reasoning tokens are billed against Groq's per-minute token budget and
+    # emitted before the first character of the answer, so they cost both
+    # latency and rate-limit headroom. Judge and generator are separate
+    # because a yes/no grading verdict needs far less deliberation than a
+    # cited multi-sentence answer. Evaluate before lowering either.
+    groq_reasoning_effort: Literal["low", "medium", "high"] | None = None
+    groq_judge_reasoning_effort: Literal["low", "medium", "high"] | None = None
     # OpenRouter is an OpenAI-compatible, optional dynamic fallback. Free
     # models use prompt-plus-parser structured output, never native strict mode.
-    openrouter_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
+    openrouter_model: str = "google/gemma-4-26b-a4b-it:free"
     # ChatGroq retries transient 429/5xx responses with exponential backoff.
     # An active graph budget passes zero, so hidden retries never exceed the
     # request-level call allowance.
@@ -99,7 +128,12 @@ class Settings(BaseSettings):
     # so switching provider does not require editing a model ID.
     llm_model: str = ""
     llm_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
-    llm_max_output_tokens: int = Field(default=1024, ge=1, le=16_384)
+    # Reasoning models spend this budget before they emit a single character of
+    # the answer: GPT-OSS used 613 of 845 output tokens on reasoning for a
+    # two-passage question. At 1024 the JSON answer was truncated mid-object,
+    # the parser rejected it, and the request failed over to every remaining
+    # provider. The ceiling covers reasoning plus a complete structured answer.
+    llm_max_output_tokens: int = Field(default=2048, ge=1, le=16_384)
     llm_request_timeout_s: int = Field(default=60, ge=1)
     llm_max_retries: int = Field(default=2, ge=0, le=5)
 
@@ -142,6 +176,15 @@ class Settings(BaseSettings):
     # but can never be placed in `normalised_rerank_score`.
     reranker_confidence_profile: str = "unverified"
     reranker_fallback_provider: Literal["local", "rrf"] = "local"
+    # Score the Voyage candidate pool locally while the Voyage request is in
+    # flight, instead of scoring Voyage's picks after it returns. The scores
+    # are identical (a per-pair sigmoid, independent of batch company); only
+    # the ~200 ms local pass moves off the critical path.
+    reranker_overlap_local_scoring: bool = True
+    # After a Voyage timeout, 5xx or 429, go straight to the local reranker
+    # for a short cooldown instead of paying the hosted timeout (3 s per
+    # attempt, measured at 6.4 s with one retry) on every request.
+    hosted_rerank_cooldown_enabled: bool = True
 
     # --- Ingestion ---
     data_dir: Path = Path("data/policies")
@@ -207,6 +250,32 @@ class Settings(BaseSettings):
     # One regeneration after a failed citation check, then abstain.
     graph_max_regenerations: int = Field(default=1, ge=0, le=3)
     graph_use_llm: bool = True
+    # Start answer generation at the same moment as evidence grading, and
+    # use it only if the grader then finds the evidence sufficient. The
+    # answer still passes the grader and citation verification before it
+    # can be shown; only the wait between them is removed. First attempt
+    # only, and only when the deterministic evidence gate already passes,
+    # so an abstention costs at most one discarded generation.
+    graph_speculative_generation: bool = True
+    # The compact contract is the serving default for low-latency policy Q&A.
+    # The condition-aware contract remains available for evaluation or cases
+    # that require a full branch-by-branch decision record.
+    # A top reranker score at or below this means no retrieved passage has
+    # anything to do with the question, and the model grader is skipped: it
+    # cannot make such evidence sufficient. Measured on this corpus: 1.3e-05
+    # for "do you sell gaming laptops" and 1.4e-04 for "what is your
+    # price-match policy", against 0.98 for a question the corpus answers.
+    # Two orders of magnitude below `evidence_top_score_threshold`, so a
+    # merely weak match still gets a model verdict and its account of what
+    # is missing. 0 disables the skip.
+    evidence_irrelevant_score_ceiling: float = Field(default=0.001, ge=0.0, le=0.1)
+    evidence_grading_mode: Literal["simple", "condition_aware"] = "simple"
+    # Evidence grading sits in front of every answer, and a slow provider there
+    # delays the whole request before a single token is generated. Bound each
+    # grading call well below `llm_request_timeout_s` so a provider that hangs
+    # costs seconds rather than the full request budget. A provider failover
+    # inherits this bound instead of resetting to the general limit.
+    evidence_grading_timeout_s: float = Field(default=15.0, ge=1.0, le=120.0)
     # One wall-clock and provider-call budget spans grading, rewriting,
     # generation, verification, and every graph retry.
     graph_request_timeout_s: int = Field(default=150, ge=5, le=3_600)
@@ -215,6 +284,25 @@ class Settings(BaseSettings):
     # hosted pilot profile deliberately caps an individual graph at four calls
     # without changing its topology or retry configuration.
     llm_execution_profile: Literal["baseline", "free_hosted_pilot"] = "baseline"
+    # Skip a provider for a short cooldown after a 429, 5xx, timeout or
+    # rejected key, instead of paying its failure latency on every request.
+    # Applies to dynamic routing of normal traffic only; evaluation keeps a
+    # fixed route so its results stay comparable.
+    llm_provider_cooldown_enabled: bool = True
+    # Count tokens spent against each provider's published limits and route
+    # to the next provider before a call would exceed them. A refusal costs
+    # a round trip and a failover; the limit is knowable in advance, so the
+    # last request that fits is served and the next goes elsewhere.
+    llm_token_budget_enabled: bool = True
+    # Groq's free tier, per model. Lower these to match a paid tier's
+    # published figures, or set 0 to stop counting that window.
+    groq_tokens_per_minute: int = Field(default=8_000, ge=0)
+    groq_tokens_per_day: int = Field(default=200_000, ge=0)
+    # What one call is assumed to cost before it is made. Charged against
+    # the remaining budget so a call is only started when it fits. Measured
+    # on this corpus: grading about 1,050 tokens, generation about 1,900,
+    # verification about 600. The default covers the largest of these.
+    llm_estimated_tokens_per_call: int = Field(default=2_000, ge=1)
 
     # --- Citation verification (Phase G) ---
     # "entailment" adds semantic checking; "deterministic" keeps the Phase F
@@ -248,6 +336,14 @@ class Settings(BaseSettings):
     # example http://otel-collector:4318/v1/traces, to export OTLP spans.
     otel_exporter_otlp_endpoint: str = ""
     otel_service_name: str = "raguard-api"
+
+    @field_validator("groq_reasoning_effort", "groq_judge_reasoning_effort", mode="before")
+    @classmethod
+    def _blank_effort_means_provider_default(cls, value: object) -> object:
+        """`GROQ_REASONING_EFFORT=` in a copied template means unset, not invalid."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @model_validator(mode="after")
     def _request_budget_fits_admission_lease(self) -> Settings:

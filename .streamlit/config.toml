@@ -1,0 +1,15 @@
+# Streamlit otherwise inherits the viewer's operating-system colour scheme, so
+# the same build renders light on one machine and dark on another. The custom
+# CSS in `frontend/app.py` sets explicit text colours, and against a dark
+# inherited background those become unreadable — dark text on a dark alert.
+# Pinning the base theme makes the demo look the same everywhere it is shown.
+[theme]
+base = "light"
+primaryColor = "#126F63"
+backgroundColor = "#F6F8F7"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#14231F"
+
+[client]
+# A demo audience does not need the "Deploy" button or the hamburger menu.
+toolbarMode = "minimal"

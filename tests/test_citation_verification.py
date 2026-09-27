@@ -791,3 +791,69 @@ def test_live_judge_rejects_a_wrong_paraphrase(evidence):
     )
 
     assert result.supported is False
+
+
+# --------------------------------------------------------------------------
+# Verification stays per sentence however the generator grouped its claims
+# --------------------------------------------------------------------------
+
+
+def test_a_claim_covering_several_sentences_is_verified_sentence_by_sentence():
+    """The generator may group sentences; the verifier never judges them as one."""
+    claims = extract_claims(
+        "Refunds take 5 to 7 business days. Store credit is issued immediately.",
+        [REFUND_LABEL],
+        [
+            {
+                "claim": ("Refunds take 5 to 7 business days. Store credit is issued immediately."),
+                "citations": [REFUND_LABEL],
+            }
+        ],
+    )
+
+    assert [c.claim_text for c in claims] == [
+        "Refunds take 5 to 7 business days.",
+        "Store credit is issued immediately.",
+    ]
+    assert all(c.citation_labels == [REFUND_LABEL] for c in claims)
+
+
+def test_grouped_claims_do_not_lose_their_citations():
+    """The old positional match silently made a grouped claim uncited."""
+    claims = extract_claims(
+        "Refunds take 5 to 7 business days. Electronics follow rule RT-014.",
+        [REFUND_LABEL],
+        [
+            {"claim": "Refunds take 5 to 7 business days.", "citations": [REFUND_LABEL]},
+            {"claim": "Electronics follow rule RT-014.", "citations": [RETURN_LABEL]},
+        ],
+    )
+
+    assert [c.citation_labels for c in claims] == [[REFUND_LABEL], [RETURN_LABEL]]
+    assert all(c.has_citation for c in claims)
+
+
+def test_each_sentence_keeps_only_its_own_segments_citations():
+    """A citation for one segment must not warrant a sentence in another."""
+    claims = extract_claims(
+        "Refunds take 5 to 7 business days. Electronics follow rule RT-014.",
+        [REFUND_LABEL, RETURN_LABEL],
+        [
+            {"claim": "Refunds take 5 to 7 business days.", "citations": [REFUND_LABEL]},
+            {"claim": "Electronics follow rule RT-014.", "citations": [RETURN_LABEL]},
+        ],
+    )
+
+    assert claims[0].citation_labels == [REFUND_LABEL]
+    assert RETURN_LABEL not in claims[0].citation_labels
+
+
+def test_a_segment_with_no_usable_citation_fails_closed():
+    claims = extract_claims(
+        "Refunds take 5 to 7 business days.",
+        [REFUND_LABEL],
+        [{"claim": "Refunds take 5 to 7 business days.", "citations": []}],
+    )
+
+    assert claims[0].citation_labels == []
+    assert claims[0].has_citation is False

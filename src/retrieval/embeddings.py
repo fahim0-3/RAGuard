@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import threading
 from typing import TYPE_CHECKING
 
@@ -38,6 +39,11 @@ def get_embedding_model() -> SentenceTransformer:
                 from sentence_transformers import SentenceTransformer
 
                 settings = get_settings()
+                if settings.local_model_offline:
+                    # sentence-transformers can perform optional Hub metadata
+                    # probes after loading a cached snapshot. Disable those
+                    # process-wide before constructing the model.
+                    os.environ["HF_HUB_OFFLINE"] = "1"
                 logger.info(
                     "Loading embedding model %s on %s",
                     settings.embedding_model,
@@ -47,6 +53,7 @@ def get_embedding_model() -> SentenceTransformer:
                     _model = SentenceTransformer(
                         settings.embedding_model,
                         device=settings.model_device,
+                        local_files_only=settings.local_model_offline,
                     )
                 except Exception as exc:
                     # Remember why, then re-raise for the caller. A background

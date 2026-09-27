@@ -718,14 +718,14 @@ def test_other_failure_category_is_sanitized():
     assert decision.failure_exception_type == "RuntimeError"
 
 
-def test_output_parser_failure_is_not_classified_as_other():
+def test_output_parser_failure_is_eligible_for_provider_fallback():
     class OutputParserException(RuntimeError):
         pass
 
     category, reason = _exception_category(OutputParserException("opaque provider payload"))
 
-    assert category == "malformed_output"
-    assert reason == "structured response parser failed"
+    assert category == "structured_output_failure"
+    assert reason == "provider returned unusable structured output"
 
 
 def test_clearly_unsupported_question_is_insufficient():

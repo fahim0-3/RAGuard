@@ -20,6 +20,7 @@ import pytest
 
 pytest.importorskip("streamlit.testing.v1")
 
+import streamlit as st
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
 from src.config import PROJECT_ROOT  # noqa: E402
@@ -104,8 +105,14 @@ def api(monkeypatch):
             raise state["query_raises"]
         return state["query_response"]
 
-    monkeypatch.setattr(httpx, "get", fake_get, raising=True)
-    monkeypatch.setattr(httpx, "post", fake_post, raising=True)
+    # The app uses one pooled `httpx.Client`, so the seam is the client's
+    # methods rather than the module-level helpers.
+    monkeypatch.setattr(httpx.Client, "get", lambda _self, url, **kw: fake_get(url, **kw))
+    monkeypatch.setattr(httpx.Client, "post", lambda _self, url, **kw: fake_post(url, **kw))
+    # The sidebar caches its status probe, and Streamlit's cache is
+    # process-global. Without this, a healthy probe from an earlier test is
+    # replayed into a test that is deliberately simulating an outage.
+    st.cache_data.clear()
     return state
 
 
@@ -348,14 +355,15 @@ def test_unreachable_api_is_reported_without_leaking_detail(api):
 def test_sidebar_never_renders_a_raw_connection_exception(api, monkeypatch):
     import httpx
 
-    original_get = httpx.get
+    # Wraps the fixture's stub, which is already installed on the client.
+    original_get = httpx.Client.get
 
-    def fail_health(url, *args, **kwargs):
+    def fail_health(self, url, *args, **kwargs):
         if url.endswith("/health"):
             raise httpx.ConnectError("connection refused to private-host:8000")
-        return original_get(url, *args, **kwargs)
+        return original_get(self, url, *args, **kwargs)
 
-    monkeypatch.setattr(httpx, "get", fail_health)
+    monkeypatch.setattr(httpx.Client, "get", fail_health)
 
     app = run_app()
 
@@ -407,3 +415,57 @@ def test_abstention_is_rendered_as_a_refusal_not_an_error(api):
     assert view.outcome == "abstain"
     assert view.kind == "warning"
     assert view.is_error is False
+
+
+# --------------------------------------------------------------------------
+# Time between the click and the request
+# --------------------------------------------------------------------------
+
+
+def test_asking_makes_no_extra_readiness_call(api, monkeypatch):
+    """The click used to re-fetch /ready, adding a round trip before sending.
+
+    On a host where `localhost` resolves to an address the API does not listen
+    on, each such call cost seconds rather than milliseconds.
+    """
+    import httpx
+
+    probed: list[str] = []
+    stubbed_get = httpx.Client.get
+
+    def counting_get(self, url, *args, **kwargs):
+        probed.append(url.rsplit("/", 1)[-1])
+        return stubbed_get(self, url, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.Client, "get", counting_get)
+
+    app = run_app()
+    app.text_area(key="question_text").input(CUSTOM).run()
+    probed.clear()
+    app.button[0].click().run()
+
+    assert api["sent"] == [CUSTOM], "the question was still sent"
+    assert probed.count("ready") <= 1, f"one readiness probe per rerun at most, saw {probed}"
+
+
+def test_the_api_client_is_reused_across_reruns(api):
+    """A fresh connection per call is what made `localhost` cost ~2 s each time."""
+    from frontend import app as frontend_app
+
+    first = frontend_app._client()
+    second = frontend_app._client()
+
+    assert first is second
+
+
+def test_the_default_api_url_avoids_hostname_resolution(monkeypatch):
+    monkeypatch.delenv("API_BASE_URL", raising=False)
+    import importlib
+
+    from frontend import app as frontend_app
+
+    reloaded = importlib.reload(frontend_app)
+    try:
+        assert reloaded.API_BASE_URL == "http://127.0.0.1:8000"
+    finally:
+        importlib.reload(frontend_app)

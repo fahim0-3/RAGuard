@@ -30,125 +30,239 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from frontend.presenter import present  # noqa: E402
 
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+# 127.0.0.1 rather than `localhost` deliberately. On Windows `localhost`
+# resolves to ::1 first, the API binds IPv4 only, and each new connection
+# then stalls about two seconds before falling back: measured 2.3 s per
+# call against 0.23 s here.
+API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
 REQUEST_TIMEOUT = float(os.getenv("API_TIMEOUT_S", "180"))
+
+
+@st.cache_resource(show_spinner=False)
+def _client() -> httpx.Client:
+    """One pooled client for the whole session.
+
+    `httpx.get(...)` opens a new connection every call, and a click made
+    three or four of them before the question was even sent. Reusing one
+    connection pays any connection-setup cost once per process instead of
+    once per call, which matters most when the base URL is a hostname that
+    resolves to an address the API does not listen on.
+    """
+    # A generous `keepalive_expiry` only helps within a burst: uvicorn closes an
+    # idle connection after about five seconds regardless, so a connection never
+    # survives the pause while someone types. The saving is real but bounded to
+    # the several calls one rerun makes back to back.
+    return httpx.Client(
+        timeout=httpx.Timeout(REQUEST_TIMEOUT, connect=10.0),
+        limits=httpx.Limits(max_keepalive_connections=4, keepalive_expiry=60.0),
+    )
+
 
 st.set_page_config(page_title="RAGuard", page_icon="🛡️", layout="wide")
 
+# The theme itself is pinned in `.streamlit/config.toml`. This sheet only adds
+# what Streamlit has no setting for: the brand sidebar, calmer surfaces, and one
+# behaviour fix — Streamlit dims every element while a rerun is in flight, which
+# reads as a broken page rather than a busy one during a fifteen-second query.
 st.markdown(
     """
     <style>
-      .stApp { background: #f7f8f6; color: #1b2927; }
-      .stApp p, .stApp li, .stApp label,
-      .stApp [data-testid="stMarkdownContainer"],
-      .stApp [data-testid="stMarkdownContainer"] p,
-      .stApp [data-testid="stCaptionContainer"] { color: #1b2927; }
-      [data-testid="stSidebar"] { background: #173a3a; }
-      [data-testid="stSidebar"] * { color: #f4f7f4; }
-      [data-testid="stSidebar"] h1,
-      [data-testid="stSidebar"] h2,
-      [data-testid="stSidebar"] h3,
-      [data-testid="stSidebar"] label,
-      [data-testid="stSidebar"] [data-testid="stTextInput"] label,
-      [data-testid="stSidebar"] summary,
-      [data-testid="stSidebar"] [data-testid="stCaptionContainer"],
-      [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {
-        color: #f4f7f4 !important;
+      :root {
+        --rg-ink: #14231f;
+        --rg-muted: #5c6c68;
+        --rg-line: #dfe7e3;
+        --rg-brand: #126f63;
+        --rg-brand-dark: #0d5a50;
+        --rg-sidebar: #12332f;
+        --rg-sidebar-soft: #1e4a44;
+        --rg-sidebar-line: #356a62;
+        --rg-sidebar-ink: #eef5f2;
       }
-      [data-testid="stSidebar"] [data-baseweb="input"],
-      [data-testid="stSidebar"] [data-baseweb="select"] > div,
-      [data-testid="stSidebar"] textarea {
-        background: #224b4b;
-        border-color: #5b8580;
+
+      /* A query takes seconds, and Streamlit fades the whole page while it
+         runs. Keep the previous result readable; the spinner reports progress. */
+      [data-stale="true"], .element-container[data-stale="true"] {
+        opacity: 1 !important;
+        transition: none !important;
       }
-      [data-testid="stSidebar"] [data-baseweb="input"] input,
-      [data-testid="stSidebar"] [data-baseweb="input"] textarea,
-      [data-testid="stSidebar"] [data-baseweb="select"] *,
-      [data-testid="stSidebar"] textarea,
+
+      .stApp { color: var(--rg-ink); }
+      .block-container { padding-top: 2.4rem; max-width: 1180px; }
+      .stApp h1 { font-size: 1.95rem; letter-spacing: -0.015em; margin-bottom: 0.1rem; }
+      .stApp h2, .stApp h3 { font-size: 1.08rem; letter-spacing: 0.005em; }
+
+      .raguard-kicker {
+        color: var(--rg-brand);
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        margin-bottom: 0.3rem;
+      }
+      .raguard-subtitle {
+        color: var(--rg-muted);
+        font-size: 0.95rem;
+        margin-bottom: 1.6rem;
+      }
+
+      /* --- Sidebar ------------------------------------------------------ */
+      [data-testid="stSidebar"] { background: var(--rg-sidebar); }
+      [data-testid="stSidebar"] * { color: var(--rg-sidebar-ink); }
+      [data-testid="stSidebar"] [data-testid="stCaptionContainer"] * { color: #b7d2cc; }
+      [data-testid="stSidebar"] h1 { font-size: 1.4rem; }
+      /* Streamlit renamed these wrappers; the input's own background is
+         transparent, so the surrounding root element is what has to be dark.
+         Styling only the input leaves white text on a white field. */
+      [data-testid="stSidebar"] [data-testid="stTextInputRootElement"],
+      [data-testid="stSidebar"] [data-testid="stTextAreaRootElement"],
+      [data-testid="stSidebar"] [data-testid="stSelectbox"] > div > div,
       [data-testid="stSidebar"] .stButton > button {
-        color: #f4f7f4 !important;
+        background: var(--rg-sidebar-soft) !important;
+        border-color: var(--rg-sidebar-line) !important;
       }
-      [data-testid="stSidebar"] input::placeholder,
-      [data-testid="stSidebar"] textarea::placeholder { color: #b9d4cf !important; opacity: 1; }
-      [data-testid="stSidebar"] .stButton > button {
-        background: #224b4b;
-        border-color: #5b8580;
+      /* Streamlit 1.62 renders text inputs through BaseWeb's `base-input`
+         and `input` containers. The older root-element selector above does
+         not reach those nodes, leaving a white field behind white sidebar
+         text. Style both generations of markup so the API URL stays visible. */
+      [data-testid="stSidebar"] [data-testid="stTextInput"] [data-baseweb="base-input"],
+      [data-testid="stSidebar"] [data-testid="stTextInput"] [data-baseweb="input"],
+      [data-testid="stSidebar"] [data-testid="stTextInput"] input {
+        background: var(--rg-sidebar-soft) !important;
+        border-color: var(--rg-sidebar-line) !important;
+        color: var(--rg-sidebar-ink) !important;
+        -webkit-text-fill-color: var(--rg-sidebar-ink) !important;
+        caret-color: var(--rg-sidebar-ink) !important;
       }
-      [data-testid="stSidebar"] .stButton > button:hover {
-        background: #2c5d5c;
-        border-color: #82aaa4;
+      [data-testid="stSidebar"] input::placeholder { color: #a9c7c1 !important; opacity: 1; }
+      /* Status pills are readable on the dark sidebar without relying on the
+         alert background Streamlit happens to pick. */
+      [data-testid="stSidebar"] [data-testid="stAlert"] {
+        background: var(--rg-sidebar-soft);
+        border: 1px solid var(--rg-sidebar-line);
+        border-left: 3px solid var(--rg-brand);
+        border-radius: 6px;
       }
-      .stApp h1, .stApp h2, .stApp h3 { color: #1b2927; }
-      .stApp [data-testid="stAlert"] p,
-      .stApp [data-testid="stAlert"] div { color: #1b2927; }
-      .stApp [data-testid="stMetricLabel"],
-      .stApp [data-testid="stMetricLabel"] *,
-      .stApp [data-testid="stMetricValue"],
-      .stApp [data-testid="stMetricValue"] * { color: #1b2927; }
-      .stApp button[data-baseweb="tab"] { color: #1b2927; }
-      .stApp button[data-baseweb="tab"][aria-selected="true"] { color: #0f635a; }
-      .stApp [data-testid="stExpander"] summary,
-      .stApp [data-testid="stExpander"] p,
-      .stApp code, .stApp pre { color: #1b2927; }
-      .stApp [data-testid="stSelectbox"] [data-baseweb="select"] > div,
-      .stApp [data-testid="stTextArea"] [data-baseweb="input"] {
-        background: #224b4b;
-        border-color: #5b8580;
+      [data-testid="stSidebar"] [data-testid="stAlert"] * {
+        color: var(--rg-sidebar-ink) !important;
       }
-      .stApp [data-testid="stSelectbox"] [data-baseweb="select"] *,
-      .stApp [data-testid="stTextArea"] textarea {
-        color: #f4f7f4 !important;
-      }
-      .stApp [data-testid="stTextArea"] textarea::placeholder {
-        color: #b9d4cf !important;
-        opacity: 1;
-      }
-      .stApp [data-testid="stTextArea"] [data-baseweb="input"]:focus-within {
-        border-color: #82aaa4 !important;
-        box-shadow: 0 0 0 1px #82aaa4;
-      }
-      .stApp [data-testid="stTextArea"] [data-baseweb="input"]:has(textarea:invalid),
-      .stApp [data-testid="stTextArea"] [data-baseweb="input"]:has(textarea[aria-invalid="true"]) {
-        border-color: #c95a5a !important;
-        box-shadow: 0 0 0 1px #c95a5a;
-      }
-      .stApp [data-testid="stButton"] > button:not([kind="primary"]) {
-        background: #224b4b;
-        border-color: #5b8580;
-        color: #f4f7f4 !important;
-      }
-      .stApp [data-testid="stButton"] > button:not([kind="primary"]):hover {
-        background: #2c5d5c;
-        border-color: #82aaa4;
-      }
-      [data-testid="stSidebar"] [data-testid="stAlert"] p,
-      [data-testid="stSidebar"] [data-testid="stAlert"] div,
-      [data-testid="stSidebar"] [data-testid="stExpander"] summary,
-      [data-testid="stSidebar"] [data-testid="stExpander"] p,
-      [data-testid="stSidebar"] code,
-      [data-testid="stSidebar"] pre { color: #f4f7f4 !important; }
+      [data-testid="stSidebar"] [data-testid="stAlert"] svg { fill: var(--rg-sidebar-ink); }
+
+      /* --- Main panel --------------------------------------------------- */
+      [data-testid="stAlert"] { border-radius: 8px; }
+      .stApp [data-testid="stAlert"] * { color: var(--rg-ink); }
+
       [data-testid="stMetric"] {
         background: #ffffff;
-        border: 1px solid #dbe3df;
-        border-radius: 6px;
-        padding: 0.65rem 0.8rem;
+        border: 1px solid var(--rg-line);
+        border-radius: 8px;
+        padding: 0.7rem 0.9rem;
       }
-      .raguard-kicker {
-        color: #167a6e;
-        font-size: 0.78rem;
+      [data-testid="stMetricLabel"] * {
+        color: var(--rg-muted) !important;
+        font-size: 0.74rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      [data-testid="stMetricValue"] { font-size: 1.5rem; }
+
+      .stTabs [data-baseweb="tab-list"] { gap: 1.6rem; border-bottom: 1px solid var(--rg-line); }
+      .stTabs [data-baseweb="tab"] { padding: 0.4rem 0; color: var(--rg-muted); }
+      .stTabs [data-baseweb="tab"][aria-selected="true"] { color: var(--rg-brand); }
+
+      /* Scoped to the main panel: the same rule in the sidebar produced a
+         white panel holding white text. */
+      [data-testid="stMain"] [data-testid="stExpander"] {
+        border: 1px solid var(--rg-line);
+        border-radius: 8px;
+        background: #ffffff;
+      }
+      [data-testid="stSidebar"] [data-testid="stExpander"] {
+        background: var(--rg-sidebar-soft);
+        border: 1px solid var(--rg-sidebar-line);
+        border-radius: 8px;
+      }
+      [data-testid="stSidebar"] [data-testid="stExpander"] * {
+        color: var(--rg-sidebar-ink) !important;
+      }
+      /* The summary keeps its own near-white background, so the light label
+         sitting on it was invisible until the panel was scrolled past. */
+      [data-testid="stSidebar"] [data-testid="stExpander"] summary {
+        background: var(--rg-sidebar-soft) !important;
+        font-weight: 600;
+      }
+      [data-testid="stSidebar"] [data-testid="stExpander"] summary:hover {
+        background: #235852 !important;
+      }
+
+      /* Status rows: readable on the dark sidebar, unlike the JSON viewer's
+         own palette. */
+      .rg-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.75rem;
+        padding: 0.28rem 0;
+        border-bottom: 1px solid rgba(238, 245, 242, 0.12);
+        font-size: 0.8rem;
+        line-height: 1.35;
+      }
+      .rg-row:last-child { border-bottom: none; }
+      .rg-row__key { color: #b7d2cc; text-transform: capitalize; }
+      .rg-row__value {
+        color: var(--rg-sidebar-ink);
+        font-weight: 600;
+        text-align: right;
+        word-break: break-word;
+      }
+      .rg-row--group {
+        color: #8fb8b1;
+        font-size: 0.7rem;
         font-weight: 700;
         letter-spacing: 0.08em;
         text-transform: uppercase;
-        margin-bottom: 0.25rem;
+        border-bottom: none;
+        padding-top: 0.6rem;
       }
-      .raguard-subtitle { color: #526460; margin-bottom: 1.25rem; }
+      .rg-row--empty { color: #b7d2cc; border-bottom: none; }
+
+      /* Without this a narrow column breaks a label into one letter per
+         line, which looks broken rather than compact. */
+      .stButton > button { border-radius: 7px; font-weight: 600; white-space: nowrap; }
       .stButton > button[kind="primary"] {
-        background: #167a6e;
-        border-color: #167a6e;
+        background: var(--rg-brand);
+        border-color: var(--rg-brand);
       }
       .stButton > button[kind="primary"]:hover {
-        background: #0f635a;
-        border-color: #0f635a;
+        background: var(--rg-brand-dark);
+        border-color: var(--rg-brand-dark);
+      }
+      /* Session history reads as a list of links, not a wall of buttons. */
+      .stButton > button:not([kind="primary"]) {
+        background: #ffffff;
+        border: 1px solid var(--rg-line);
+        color: var(--rg-ink);
+        text-align: left;
+        font-weight: 500;
+      }
+      .stButton > button:not([kind="primary"]):hover {
+        border-color: var(--rg-brand);
+        color: var(--rg-brand);
+      }
+
+      .stTextArea textarea, .stSelectbox [data-baseweb="select"] > div {
+        background: #ffffff;
+        border-color: var(--rg-line);
+      }
+      .stTextArea textarea:focus { border-color: var(--rg-brand); box-shadow: none; }
+
+      .rg-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.9rem 0 0.2rem; }
+      .rg-chip {
+        background: #eaf3f1;
+        border: 1px solid #cfe2dd;
+        border-radius: 999px;
+        color: var(--rg-brand-dark);
+        font-size: 0.76rem;
+        font-weight: 600;
+        padding: 0.18rem 0.62rem;
       }
     </style>
     """,
@@ -181,25 +295,21 @@ NO_EXAMPLE = "(type your own)"
 MAX_RECENT_QUESTIONS = 5
 
 
-def check_readiness(base_url: str) -> tuple[bool, str]:
-    """Ask the API whether it can actually serve a query.
+def readiness_gate(status: dict, base_url: str) -> tuple[bool, str]:
+    """Decide whether to send, from the probe already taken this rerun.
 
-    Called before sending, so a request is never parked inside a model download.
-    Returns (ready, human-readable reason).
+    The gate exists so a question is never parked inside a model download.
+    It used to re-fetch `/ready` here, duplicating the call the sidebar had
+    just made and adding a whole round trip between the click and the
+    request. The cached probe is at most `STATUS_TTL_S` old, which is
+    ample: model loading takes minutes, and the API rejects a query itself
+    if it is still initialising.
     """
-    try:
-        response = httpx.get(f"{base_url}/ready", timeout=15.0)
-    except httpx.HTTPError as exc:
-        return False, f"Could not reach the API at {base_url} ({type(exc).__name__})."
-
-    if response.status_code == 200:
+    if status["ready"] is None:
+        return False, f"Could not reach the API at {base_url}."
+    if status["ready"]:
         return True, ""
-
-    try:
-        detail = response.json().get("detail") or "The service is not ready."
-    except ValueError:
-        detail = f"The service is not ready (HTTP {response.status_code})."
-    return False, detail
+    return False, status["ready_detail"] or "The service is not ready."
 
 
 def call_api(base_url: str, question: str) -> dict:
@@ -210,7 +320,7 @@ def call_api(base_url: str, question: str) -> dict:
     produce.
     """
     try:
-        response = httpx.post(
+        response = _client().post(
             f"{base_url}/query", json={"query": question}, timeout=REQUEST_TIMEOUT
         )
     except httpx.TimeoutException:
@@ -252,6 +362,73 @@ def call_api(base_url: str, question: str) -> dict:
 # Sidebar
 # --------------------------------------------------------------------------
 
+#: Streamlit reruns the whole script on every interaction, so an uncached
+#: sidebar re-polled /health, /ready and /config before the main panel could
+#: render — three round trips added to every click, including Ask. A short TTL
+#: keeps the status honest while making a rerun feel instant.
+STATUS_TTL_S = 15
+
+
+@st.cache_data(ttl=STATUS_TTL_S, show_spinner=False)
+def _service_status(base_url: str) -> dict:
+    """Health, readiness and configuration in one cached probe.
+
+    Returns only rendered-safe values. A raw exception can carry an internal
+    hostname or a credential embedded in a user-edited URL, so nothing beyond
+    the exception's presence crosses this boundary.
+    """
+    status: dict = {"health": None, "ready": None, "ready_detail": "", "checks": {}, "config": None}
+    try:
+        status["health"] = _client().get(f"{base_url}/health", timeout=10.0).json()
+    except Exception:
+        status["health"] = None
+
+    try:
+        readiness = _client().get(f"{base_url}/ready", timeout=15.0)
+        body = readiness.json()
+        status["ready"] = readiness.status_code == 200
+        status["ready_detail"] = body.get("detail", "Not ready")
+        status["checks"] = body.get("checks", {})
+    except Exception:
+        status["ready"] = None
+
+    try:
+        status["config"] = _client().get(f"{base_url}/config", timeout=10.0).json()
+    except Exception:
+        status["config"] = None
+    return status
+
+
+def _render_detail_rows(data: object, prefix: str = "") -> None:
+    """Render a nested mapping as flat, readable rows.
+
+    `st.json` brings its own colour scheme, which sits unreadably on the dark
+    sidebar and cannot be restyled reliably across Streamlit versions. These
+    rows inherit the sidebar palette instead, and a status panel is read as
+    label-and-value anyway rather than as a JSON document.
+    """
+    if not isinstance(data, dict) or not data:
+        st.markdown(
+            '<div class="rg-row rg-row--empty">No detail reported.</div>', unsafe_allow_html=True
+        )
+        return
+
+    for key, value in data.items():
+        label = f"{prefix}{key}".replace("_", " ")
+        if isinstance(value, dict):
+            st.markdown(f'<div class="rg-row rg-row--group">{label}</div>', unsafe_allow_html=True)
+            _render_detail_rows(value, prefix="")
+            continue
+        if isinstance(value, list):
+            value = ", ".join(str(item) for item in value) or "—"
+        rendered = "—" if value is None or value == "" else str(value)
+        st.markdown(
+            f'<div class="rg-row"><span class="rg-row__key">{label}</span>'
+            f'<span class="rg-row__value">{rendered}</span></div>',
+            unsafe_allow_html=True,
+        )
+
+
 with st.sidebar:
     st.title("RAGuard")
     st.caption("Self-healing hybrid RAG with citation verification")
@@ -260,30 +437,30 @@ with st.sidebar:
 
     st.divider()
     st.subheader("Service status")
-    try:
-        health = httpx.get(f"{api_url}/health", timeout=10.0).json()
-        st.success(f"API {health.get('status', 'unknown')} · v{health.get('version', '?')}")
-    except Exception:
-        # The raw exception can include an internal hostname or credentials
-        # embedded in a user-edited URL. Keep the sidebar actionable and safe.
-        st.error("API unreachable.")
+    status = _service_status(api_url)
 
-    try:
-        readiness = httpx.get(f"{api_url}/ready", timeout=15.0)
-        if readiness.status_code == 200:
-            st.success("Dependencies ready")
-        else:
-            st.warning(readiness.json().get("detail", "Not ready"))
-        with st.expander("Readiness detail"):
-            st.json(readiness.json().get("checks", {}))
-    except Exception:
+    health = status["health"]
+    if health is None:
+        st.error("API unreachable.")
+    else:
+        st.success(f"API {health.get('status', 'unknown')} · v{health.get('version', '?')}")
+
+    if status["ready"] is None:
         st.caption("Readiness unavailable")
+    elif status["ready"]:
+        st.success("Dependencies ready")
+    else:
+        st.warning(status["ready_detail"])
+
+    if status["ready"] is not None:
+        with st.expander("Readiness detail"):
+            _render_detail_rows(status["checks"])
 
     with st.expander("Active configuration"):
-        try:
-            st.json(httpx.get(f"{api_url}/config", timeout=10.0).json())
-        except Exception:
+        if status["config"] is None:
             st.caption("Unavailable")
+        else:
+            _render_detail_rows(status["config"])
 
 
 # --------------------------------------------------------------------------
@@ -397,10 +574,7 @@ with composer:
             )
         else:
             _remember_question(question)
-            # Check readiness first so a query is never parked inside a model
-            # download. This is also what makes the spinner text below truthful.
-            with st.spinner("Checking service readiness…"):
-                ready, reason = check_readiness(api_url)
+            ready, reason = readiness_gate(status, api_url)
 
             if not ready:
                 st.session_state["view"] = present({"error": "not_ready", "detail": reason})
@@ -446,6 +620,15 @@ else:
     with answer_tab:
         if view.body:
             st.markdown(view.body)
+
+        # The cited passages, named inline. The full text stays one tab away;
+        # this is the at-a-glance answer to "what is this resting on?".
+        if view.citations:
+            chips = "".join(
+                f'<span class="rg-chip">{citation["policy_id"]} · {citation["label"]}</span>'
+                for citation in view.citations
+            )
+            st.markdown(f'<div class="rg-chips">{chips}</div>', unsafe_allow_html=True)
 
         columns = st.columns(len(view.metrics))
         for column, (label, value) in zip(columns, view.metrics.items(), strict=True):

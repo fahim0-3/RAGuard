@@ -29,7 +29,9 @@ import re
 from typing import Any
 
 from src.config import get_settings
+from src.generation.llm_routing import is_retryable_provider_error
 from src.retrieval.types import RetrievedChunk
+from src.self_healing.execution_budget import ExecutionBudgetExceeded
 from src.self_healing.state import EvidenceGrade
 
 logger = logging.getLogger(__name__)
@@ -37,6 +39,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "EVIDENCE_GRADER_SYSTEM_PROMPT",
     "deterministic_signals",
+    "passes_deterministic_gate",
     "grade_evidence",
     "policy_ids_in",
 ]
@@ -51,48 +54,11 @@ __all__ = [
 #: of "identifier" is how the grader ended up stricter than the verifier.
 _POLICY_ID_PATTERN = re.compile(r"\b[A-Z]{2,5}-(?:[A-Z]{2,5}-)?\d{1,4}\b")
 
-#: Exact broad-policy overview requests. These are not requests for every
-#: sentence in a policy; they are customer-facing summary questions. The
-#: patterns are deliberately anchored so a specific question like "what is the
-#: return policy for electronics?" still needs the exact deciding section.
-_POLICY_OVERVIEW_TARGETS: tuple[tuple[re.Pattern[str], str, str], ...] = (
-    (
-        re.compile(
-            r"^\s*(?:what(?:'s| is)|explain|summari[sz]e|tell me about)\s+"
-            r"(?:the\s+)?return policy\s*\??\s*$",
-            re.IGNORECASE,
-        ),
-        "RET-002",
-        "return_policy.txt",
-    ),
-    (
-        re.compile(
-            r"^\s*(?:what(?:'s| is)|explain|summari[sz]e|tell me about)\s+"
-            r"(?:the\s+)?refund policy\s*\??\s*$",
-            re.IGNORECASE,
-        ),
-        "REF-001",
-        "refund_policy.txt",
-    ),
-    (
-        re.compile(
-            r"^\s*(?:what(?:'s| is)|explain|summari[sz]e|tell me about)\s+"
-            r"(?:the\s+)?delivery policy\s*\??\s*$",
-            re.IGNORECASE,
-        ),
-        "DEL-004",
-        "delivery_policy.txt",
-    ),
-    (
-        re.compile(
-            r"^\s*(?:what(?:'s| is)|explain|summari[sz]e|tell me about)\s+"
-            r"(?:the\s+)?damaged product policy\s*\??\s*$",
-            re.IGNORECASE,
-        ),
-        "DMG-003",
-        "damaged_product_policy.txt",
-    ),
-)
+# Broad overview questions ("what is the refund policy?") are handled by the
+# grader prompt itself, not by matching question wording. Rule 5 of the system
+# prompt instructs the model to treat them as summary requests. Hardcoding
+# question patterns to corpus documents would make the grader pass only for the
+# phrasings someone happened to anticipate.
 
 # Every value is a placeholder, never a literal. A concrete `0.0` here gets
 # copied verbatim by smaller models, which then read as "no confidence" and
@@ -134,14 +100,6 @@ def policy_ids_in(text: str) -> list[str]:
     return list(dict.fromkeys(_POLICY_ID_PATTERN.findall(text.upper())))
 
 
-def _policy_overview_target(query: str) -> tuple[str, str] | None:
-    """Return the requested policy ID and source for exact overview questions."""
-    for pattern, policy_id, source in _POLICY_OVERVIEW_TARGETS:
-        if pattern.match(query):
-            return policy_id, source
-    return None
-
-
 def deterministic_signals(query: str, chunks: list[RetrievedChunk]) -> dict[str, Any]:
     """Measurements only. No thresholds are applied here."""
     scores = [c.normalised_rerank_score for c in chunks if c.normalised_rerank_score is not None]
@@ -172,19 +130,6 @@ def deterministic_signals(query: str, chunks: list[RetrievedChunk]) -> dict[str,
     ]
     matched_as_document = [pid for pid in matched_ids if pid in retrieved_ids]
 
-    overview_target = _policy_overview_target(query)
-    overview_policy_id = overview_target[0] if overview_target else ""
-    overview_source = overview_target[1] if overview_target else ""
-    overview_chunk_count = sum(
-        1
-        for chunk in chunks
-        if overview_target
-        and (
-            chunk.policy_id.upper() == overview_policy_id
-            or chunk.source.lower() == overview_source.lower()
-        )
-    )
-
     return {
         "chunk_count": len(chunks),
         "scored_chunk_count": len(scores),
@@ -198,12 +143,19 @@ def deterministic_signals(query: str, chunks: list[RetrievedChunk]) -> dict[str,
         "matched_document_ids": matched_as_document,
         "policy_id_exact_match": bool(matched_ids),
         "policy_id_requested_but_missing": bool(requested_ids) and not matched_ids,
-        "policy_overview_requested": bool(overview_target),
-        "policy_overview_policy_id": overview_policy_id,
-        "policy_overview_source": overview_source,
-        "policy_overview_chunk_count": overview_chunk_count,
-        "policy_overview_match": bool(overview_target and overview_chunk_count),
     }
+
+
+def passes_deterministic_gate(query: str, chunks: list[RetrievedChunk]) -> bool:
+    """Whether the model-free checks alone leave the evidence acceptable.
+
+    When they do not, the grader cannot return sufficient whatever the
+    model says, so work started on the assumption that it will is waste.
+    """
+    if not chunks:
+        return False
+    ok, _reason = _deterministic_verdict(deterministic_signals(query, chunks))
+    return ok
 
 
 def _deterministic_verdict(signals: dict[str, Any]) -> tuple[bool, str]:
@@ -286,6 +238,14 @@ def grade_evidence(
     settings = get_settings()
     use_llm = settings.graph_use_llm if use_llm is None else use_llm
 
+    # Grading blocks generation, so it gets its own, tighter ceiling. The graph
+    # budget still wins when it is the smaller of the two.
+    grading_timeout_s = (
+        settings.evidence_grading_timeout_s
+        if llm_timeout_s is None
+        else min(float(llm_timeout_s), settings.evidence_grading_timeout_s)
+    )
+
     signals = deterministic_signals(query, chunks)
     deterministic_ok, deterministic_reason = _deterministic_verdict(signals)
 
@@ -311,7 +271,48 @@ def grade_evidence(
             deterministic_only=True,
         )
 
-    # Serving uses the condition-aware answerability contract.  It was first
+    # No retrieved passage scored even marginally relevant: nothing in the
+    # corpus relates to this question. Sufficiency is a conjunction with the
+    # deterministic gate, so no model verdict could make this evidence
+    # sufficient, and a model asked to read passages the reranker has already
+    # scored at nearly zero has nothing to add. Measured at about a second
+    # per call, three times on a request that retries.
+    #
+    # This stays ordinary insufficient evidence rather than a failure: no
+    # failure category is set, so the retry loop still runs and a rewrite still
+    # gets its chance to retrieve something better. A merely weak score keeps
+    # the model grader, because there a rewrite has a real chance and the
+    # model's account of what is missing is what guides it.
+    if (
+        chain is None
+        and not deterministic_ok
+        and signals["scored_chunk_count"] > 0
+        and settings.evidence_irrelevant_score_ceiling > 0.0
+        and signals["top_score"] <= settings.evidence_irrelevant_score_ceiling
+    ):
+        return EvidenceGrade(
+            relevant=False,
+            sufficient=False,
+            confidence=0.0,
+            missing_information=[deterministic_reason],
+            rationale=deterministic_reason,
+            signals=signals,
+            deterministic_only=True,
+        )
+
+    # Serving can use the compact grading contract for ordinary policy Q&A.
+    # It needs only relevance, sufficiency, confidence, and missing evidence,
+    # avoiding the large condition-mapping response that smaller or free
+    # providers frequently return incompletely. The existing deterministic
+    # gates still have to agree before answer generation begins.
+    if chain is None and settings.evidence_grading_mode == "simple":
+        chain = _build_grader_chain(
+            timeout_s=grading_timeout_s,
+            max_retries=llm_max_retries,
+        )
+
+    # The condition-aware contract is retained for evaluation and deployments
+    # that explicitly select it. It was first
     # evaluated separately because it changes abstention behaviour, but the
     # older relevance-only schema cannot safely distinguish an applicable
     # exception from a superficially related policy.  Keep an explicitly
@@ -324,12 +325,8 @@ def grade_evidence(
         )
 
         try:
-            answerability_chain = (
-                _build_answerability_chain()
-                if llm_timeout_s is None and llm_max_retries is None
-                else _build_answerability_chain(
-                    timeout_s=llm_timeout_s, max_retries=llm_max_retries
-                )
+            answerability_chain = _build_answerability_chain(
+                timeout_s=grading_timeout_s, max_retries=llm_max_retries
             )
             decision = grade_answerability(
                 query,
@@ -339,7 +336,9 @@ def grade_evidence(
             )
         except Exception as exc:  # noqa: BLE001 - serving must fail closed
             logger.warning(
-                "Condition-aware evidence grader unavailable; refusing to answer (%s)", exc
+                "Condition-aware evidence grader unavailable; refusing to answer "
+                "[exception_type=%s]",
+                type(exc).__name__,
             )
             return EvidenceGrade(
                 relevant=deterministic_ok,
@@ -359,8 +358,25 @@ def grade_evidence(
                 "evidence_conflict": decision.evidence_conflict,
                 "policy_instruction_conflict": decision.policy_instruction_conflict,
                 "sufficiency_consistency": decision.sufficiency_consistency,
+                "failure_category": decision.failure_category,
+                "failure_phase": decision.failure_phase,
+                "failure_exception_type": decision.failure_exception_type,
             },
         }
+        if decision.failure_category:
+            from src.generation.llm_factory import provider_config
+
+            provider = provider_config("judge")
+            logger.warning(
+                "Answerability grader failed [provider=%s, model=%s, category=%s, phase=%s, "
+                "exception_type=%s, reason=%s]",
+                provider["provider"],
+                provider["model"],
+                decision.failure_category,
+                decision.failure_phase or "unknown",
+                decision.failure_exception_type or "unknown",
+                decision.failure_reason or "unspecified",
+            )
         confident_enough = decision.confidence >= settings.evidence_confidence_threshold
         sufficient = bool(deterministic_ok and decision.sufficient and confident_enough)
         return EvidenceGrade(
@@ -382,18 +398,32 @@ def grade_evidence(
             rationale=decision.rationale or deterministic_reason,
             signals=signals,
             deterministic_only=decision.deterministic_only,
+            failure_category=decision.failure_category,
+            failure_reason=decision.failure_reason,
+            failure_phase=decision.failure_phase,
+            failure_exception_type=decision.failure_exception_type,
         )
 
     try:
         if chain is None:
-            chain = (
-                _build_grader_chain()
-                if llm_timeout_s is None and llm_max_retries is None
-                else _build_grader_chain(timeout_s=llm_timeout_s, max_retries=llm_max_retries)
-            )
+            chain = _build_grader_chain(timeout_s=grading_timeout_s, max_retries=llm_max_retries)
         raw = chain.invoke({"question": query, "context": _format_passages(chunks)})
+    except ExecutionBudgetExceeded:
+        # The request budget owns this outcome; the graph reports it as such.
+        raise
     except Exception as exc:  # noqa: BLE001 - grading must never break the graph
-        logger.warning("Evidence grader unavailable; refusing to answer (%s)", exc)
+        # The grader never reached a verdict. That is an outage, not weak
+        # evidence, so it carries a failure category: without one the graph
+        # read it as "insufficient" and spent the whole retry budget
+        # rewriting and re-retrieving against a provider that was down.
+        # Only the exception type is logged; its message can echo provider
+        # text or account identifiers.
+        category = is_retryable_provider_error(exc) or "provider_error"
+        logger.warning(
+            "Evidence grader unavailable; refusing to answer [category=%s, exception_type=%s]",
+            category,
+            type(exc).__name__,
+        )
         return EvidenceGrade(
             relevant=deterministic_ok,
             sufficient=False,
@@ -402,6 +432,10 @@ def grade_evidence(
             rationale="semantic evidence grader unavailable",
             signals=signals,
             deterministic_only=True,
+            failure_category=category,
+            failure_reason="semantic evidence grader unavailable",
+            failure_phase="provider_execution",
+            failure_exception_type=type(exc).__name__,
         )
 
     if not isinstance(raw, dict):
@@ -414,6 +448,11 @@ def grade_evidence(
             rationale="semantic evidence grader returned invalid output",
             signals=signals,
             deterministic_only=True,
+            # A provider that answered in the wrong shape reached no verdict
+            # either; retrying retrieval would not change its output format.
+            failure_category="structured_output_failure",
+            failure_reason="semantic evidence grader returned invalid output",
+            failure_phase="output_validation",
         )
 
     graded = EvidenceGrade.model_validate({**raw, "signals": signals})

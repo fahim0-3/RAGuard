@@ -38,11 +38,14 @@ node; only the deterministic routers decide that.
 
 from __future__ import annotations
 
+import contextvars
 import functools
 import logging
+import threading
 import time
 import uuid
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
 
@@ -53,12 +56,14 @@ from src.generation.llm_routing import route_context
 from src.retrieval.types import RetrievedChunk
 from src.self_healing.abstention import abstention_message
 from src.self_healing.ambiguity_detector import detect_ambiguity
-from src.self_healing.evidence_grader import grade_evidence
+from src.self_healing.evidence_grader import grade_evidence, passes_deterministic_gate
 from src.self_healing.execution_budget import (
     ExecutionBudget,
     ExecutionBudgetExceeded,
     LLMCallPermit,
+    current_budget,
     ensure_time_remaining,
+    release_llm_call,
     request_budget,
     reserve_llm_call,
 )
@@ -321,6 +326,106 @@ def rerank(state: GraphState) -> dict[str, Any]:
     }
 
 
+# --------------------------------------------------------------------------
+# Speculative generation
+# --------------------------------------------------------------------------
+#
+# Grading and generation are two serial model calls of about one second each
+# on the answer path, and generation's inputs (question, passages) are fixed
+# before grading starts. Running them together removes the shorter one from
+# the critical path. The safety order is unchanged: a speculative draft is
+# read only after the grader has returned sufficient, then goes through
+# citation verification exactly like any other draft.
+
+_speculation_lock = threading.Lock()
+_speculation_executor: ThreadPoolExecutor | None = None
+#: request_id -> (inputs the draft was generated from, pending draft)
+_speculations: dict[str, tuple[tuple[str, tuple[int, ...]], Future[Any]]] = {}
+
+
+def _speculation_inputs(state: GraphState) -> tuple[str, tuple[int, ...]]:
+    chunks = state.get("retrieved_chunks") or []
+    return state.get("current_query", ""), tuple(c.chunk_id for c in chunks)
+
+
+def _should_speculate(state: GraphState, chunks: list[RetrievedChunk]) -> bool:
+    settings = get_settings()
+    return bool(
+        getattr(settings, "graph_speculative_generation", False)
+        and settings.graph_use_llm
+        and chunks
+        # A retry means the first evidence was already judged insufficient;
+        # betting again on the same outcome is how tokens get wasted.
+        and int(state.get("retry_count", 0)) == 0
+        and int(state.get("regeneration_count", 0)) == 0
+        and passes_deterministic_gate(state.get("current_query", ""), chunks)
+        and _budget_has_headroom()
+    )
+
+
+#: Calls that must remain, before the speculative one is reserved, for it to be
+#: worth the bet: the speculation itself plus one full retry (rewrite and
+#: re-grade) if the grader rejects this evidence. Below this, a tight request
+#: budget keeps the original sequential order so speculation never starves the
+#: retry loop of the permits it was sized for.
+_SPECULATION_MIN_REMAINING_CALLS = 3
+
+
+def _budget_has_headroom() -> bool:
+    budget = current_budget()
+    if budget is None:
+        return True
+    return budget.max_llm_calls - budget.llm_calls_used >= _SPECULATION_MIN_REMAINING_CALLS
+
+
+def _start_speculative_generation(state: GraphState, chunks: list[RetrievedChunk]) -> None:
+    from src.generation.answer_chain import generate_grounded_answer
+
+    global _speculation_executor
+    try:
+        # Reserved now, so the request budget counts the call it actually makes.
+        permit = _provider_permit(NODE_GENERATE)
+    except ExecutionBudgetExceeded:
+        return
+    with _speculation_lock:
+        if _speculation_executor is None:
+            _speculation_executor = ThreadPoolExecutor(
+                max_workers=4, thread_name_prefix="speculative-generation"
+            )
+        executor = _speculation_executor
+    # The copied context carries the request deadline, call budget and route.
+    future = executor.submit(
+        contextvars.copy_context().run,
+        generate_grounded_answer,
+        state.get("current_query", ""),
+        chunks,
+        previous_answer="",
+        verification_feedback="",
+        llm_timeout_s=permit.timeout_s,
+        llm_max_retries=permit.max_retries,
+    )
+    with _speculation_lock:
+        _speculations[str(state.get("request_id", ""))] = (_speculation_inputs(state), future)
+
+
+def _take_speculation(state: GraphState) -> Future[Any] | None:
+    """The pending draft, only if it was generated from exactly this state."""
+    with _speculation_lock:
+        entry = _speculations.pop(str(state.get("request_id", "")), None)
+    if entry is None:
+        return None
+    inputs, future = entry
+    if inputs != _speculation_inputs(state) or int(state.get("regeneration_count", 0)):
+        return None
+    return future
+
+
+def _discard_speculation(request_id: str) -> None:
+    """Drop an unused draft. Its in-flight call finishes and is ignored."""
+    with _speculation_lock:
+        _speculations.pop(request_id, None)
+
+
 def evidence_grader(state: GraphState) -> dict[str, Any]:
     """Combine deterministic signals with structured grading."""
     if exhausted := _deadline_guard(state, NODE_GRADER):
@@ -334,6 +439,9 @@ def evidence_grader(state: GraphState) -> dict[str, Any]:
         except ExecutionBudgetExceeded as exc:
             return _budget_exhausted_update(state, NODE_GRADER, exc)
 
+    if _should_speculate(state, chunks):
+        _start_speculative_generation(state, chunks)
+
     grade: EvidenceGrade = grade_evidence(
         state.get("current_query", ""),
         chunks,
@@ -341,11 +449,23 @@ def evidence_grader(state: GraphState) -> dict[str, Any]:
         llm_timeout_s=permit.timeout_s if permit else None,
         llm_max_retries=permit.max_retries if permit else None,
     )
-    return {
+    # The grader can decide without the provider, for instance when no
+    # retrieved passage is even marginally relevant. Give the slot back so
+    # the trace counts calls actually made and a later stage keeps its own.
+    if permit is not None and grade.deterministic_only:
+        release_llm_call()
+
+    update = {
         "evidence_grade": grade.model_dump(),
         "timestamps": _stamp(state, "graded_at"),
         "node_sequence": [NODE_GRADER],
     }
+    if grade.failure_category:
+        # The answerability provider never returned a usable decision.  Do not
+        # treat that operational problem as weak policy evidence and repeat the
+        # costly retrieval/reranking cycle.
+        update["failure_reason"] = "provider_error"
+    return update
 
 
 def query_rewriter(state: GraphState) -> dict[str, Any]:
@@ -408,6 +528,15 @@ def _revision_feedback(state: GraphState) -> tuple[str, str]:
         details.append("Missing exact evidence: " + ", ".join(verification.missing_evidence[:10]))
     if verification.invalid_citations:
         details.append("Invalid citations: " + ", ".join(verification.invalid_citations[:10]))
+    # A draft refused before verification has no verification result to explain
+    # it, so the rejection reason is the only feedback available.
+    rejection = str(state.get("generation_rejection") or "").strip()
+    if not details and rejection:
+        details.append(
+            f"The previous draft was refused: {rejection}. "
+            "Produce exactly one claim_citations entry per sentence of the answer, "
+            "with the claim copied character for character from that sentence."
+        )
     return previous, " ".join(details)[:4000]
 
 
@@ -418,19 +547,33 @@ def generate_answer(state: GraphState) -> dict[str, Any]:
     from src.generation.answer_chain import generate_grounded_answer
 
     chunks = list(state.get("retrieved_chunks") or [])
-    try:
-        permit = _provider_permit(NODE_GENERATE)
-    except ExecutionBudgetExceeded as exc:
-        return _budget_exhausted_update(state, NODE_GENERATE, exc)
-    previous_answer, verification_feedback = _revision_feedback(state)
-    response = generate_grounded_answer(
-        state.get("current_query", ""),
-        chunks,
-        previous_answer=previous_answer,
-        verification_feedback=verification_feedback,
-        llm_timeout_s=permit.timeout_s,
-        llm_max_retries=permit.max_retries,
-    )
+    response = None
+    speculative = False
+    pending = _take_speculation(state)
+    if pending is not None:
+        try:
+            response = pending.result()
+            speculative = True
+        except ExecutionBudgetExceeded as exc:
+            return _budget_exhausted_update(state, NODE_GENERATE, exc)
+        except Exception:  # noqa: BLE001 - fall back to a normal generation
+            logger.warning("Speculative generation failed; generating afresh")
+            response = None
+
+    if response is None:
+        try:
+            permit = _provider_permit(NODE_GENERATE)
+        except ExecutionBudgetExceeded as exc:
+            return _budget_exhausted_update(state, NODE_GENERATE, exc)
+        previous_answer, verification_feedback = _revision_feedback(state)
+        response = generate_grounded_answer(
+            state.get("current_query", ""),
+            chunks,
+            previous_answer=previous_answer,
+            verification_feedback=verification_feedback,
+            llm_timeout_s=permit.timeout_s,
+            llm_max_retries=permit.max_retries,
+        )
 
     return {
         "answer_draft": response.answer,
@@ -445,6 +588,10 @@ def generate_answer(state: GraphState) -> dict[str, Any]:
         # graph state that can be projected to an API response.
         "failure_reason": "" if response.outcome == "answered" else response.outcome,
         "generation_outcome": response.outcome,
+        "generation_rejection": (
+            "" if response.outcome == "answered" else (response.failure_reason or "")
+        ),
+        "generation_speculative": speculative,
         "timestamps": _stamp(state, "generated_at"),
         "node_sequence": [NODE_GENERATE],
     }
@@ -513,6 +660,8 @@ def abstain(state: GraphState) -> dict[str, Any]:
 
     if state.get("budget_exhausted"):
         reason = "request_budget_exhausted"
+    elif verification.judge_unavailable:
+        reason = "provider_error"
     elif verification.checked and not verification.supported:
         reason = "unverified_citations"
     elif existing == "retrieval_failed" or state.get("generation_outcome") in {
@@ -558,6 +707,8 @@ def route_after_grading(state: GraphState) -> str:
     if state.get("budget_exhausted"):
         return "abstain"
     grade = state.get("evidence_grade") or {}
+    if grade.get("failure_category"):
+        return "provider_error"
     if grade.get("sufficient"):
         return "generate"
     return "rewrite" if may_retry(state) else "abstain"
@@ -569,6 +720,14 @@ def route_after_generation(state: GraphState) -> str:
     outcome = state.get("generation_outcome")
     if outcome == "answered" and state.get("answer_draft"):
         return "verify"
+    # A rejected citation mapping is a defect in the draft, not a verdict about
+    # the evidence: the model wrote text it did not tie to the passages it was
+    # given. That is exactly what the regeneration budget exists to repair, and
+    # the rejection reason is fed back so the second attempt is corrective. A
+    # provider outage or genuinely insufficient evidence still abstains, since
+    # repeating the call would only repeat the failure.
+    if outcome == "rejected_invalid_citation" and may_regenerate(state):
+        return "regenerate"
     return "abstain"
 
 
@@ -579,6 +738,11 @@ def route_after_verification(state: GraphState) -> str:
     verification = state.get("verification_result") or {}
     if verification.get("supported"):
         return "finalize"
+    # A judge that could not be reached says nothing about the draft. A
+    # regeneration would pay for a second generation and hit the same
+    # unavailable judge, so the request fails closed immediately instead.
+    if verification.get("judge_unavailable"):
+        return "abstain"
     return "regenerate" if may_regenerate(state) else "abstain"
 
 
@@ -643,6 +807,7 @@ def build_graph(verifier: Verifier | None = None) -> Any:
         {
             "generate": NODE_GENERATE,
             "rewrite": NODE_REWRITER,
+            "provider_error": NODE_ABSTAIN,
             "abstain": NODE_ABSTAIN,
         },
     )
@@ -656,7 +821,11 @@ def build_graph(verifier: Verifier | None = None) -> Any:
     builder.add_conditional_edges(
         NODE_GENERATE,
         route_after_generation,
-        {"verify": NODE_VERIFY, "abstain": NODE_ABSTAIN},
+        {
+            "verify": NODE_VERIFY,
+            "regenerate": "_count_regeneration",
+            "abstain": NODE_ABSTAIN,
+        },
     )
     builder.add_conditional_edges(
         NODE_VERIFY,
@@ -728,12 +897,16 @@ class SelfHealingGraph:
                         terminal.pop("node_sequence", [])
                     )
                     final = {**failed, **terminal}
+            # Runs on the success and the budget-exhausted path alike, so an
+            # unused draft never outlives its request.
+            _discard_speculation(state["request_id"])
             final.update(budget.snapshot())
             final.update(
                 llm_provider=route.provider,
                 llm_routing_mode=route.mode,
                 llm_route_workload=route.workload,
                 llm_fallbacks=list(route.fallback_reasons),
+                llm_skipped_providers=list(route.skipped),
             )
         return final
 
@@ -776,6 +949,8 @@ def summarise(state: dict[str, Any]) -> dict[str, Any]:
         "llm_provider": state.get("llm_provider"),
         "llm_routing_mode": state.get("llm_routing_mode"),
         "llm_fallbacks": list(state.get("llm_fallbacks") or []),
+        "llm_skipped_providers": list(state.get("llm_skipped_providers") or []),
+        "generation_speculative": bool(state.get("generation_speculative")),
         "budget_exhausted": bool(state.get("budget_exhausted")),
         "budget_exhaustion_reason": state.get("budget_exhaustion_reason", ""),
         "budget_exhaustion_stage": state.get("budget_exhaustion_stage", ""),

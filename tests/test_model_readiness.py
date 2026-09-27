@@ -170,6 +170,11 @@ def test_direct_access_still_raises_for_callers_that_can_handle_it(
 def client(monkeypatch):
     """No lifespan: these tests drive the endpoints, not start-up."""
     monkeypatch.setattr("api.main.is_reranker_model_loaded", lambda: True)
+    monkeypatch.setattr("api.main.is_bm25_index_built", lambda: True)
+    monkeypatch.setattr(
+        "api.main.memory_index_status",
+        lambda: {"backend": "memory", "built": True, "chunks": 22},
+    )
     monkeypatch.setattr("api.main.loaded_reranker_model_name", lambda: "test-reranker")
     test_client = TestClient(app, raise_server_exceptions=False)
     yield test_client

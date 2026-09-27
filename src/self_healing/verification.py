@@ -384,6 +384,9 @@ class EntailmentVerifier:
             uncited_claim_count=uncited,
             reason=reason,
             latency_ms=(time.perf_counter() - started) * 1000.0,
+            judge_unavailable=any(
+                verdict.get("method") == "entailment-unavailable" for verdict in verdicts
+            ),
         )
 
 

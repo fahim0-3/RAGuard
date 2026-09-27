@@ -13,10 +13,12 @@ evaluated confidence profile is implemented and approved.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from typing import Any
 
@@ -217,6 +219,60 @@ class VoyageReranker:
         )
 
 
+def _await_prescore(future: Future[RerankResult] | None) -> RerankResult | None:
+    """Collect an overlapped pre-score, or None so the caller scores afresh."""
+    if future is None:
+        return None
+    try:
+        return future.result()
+    except Exception:  # noqa: BLE001 - the sequential pass is the fallback
+        logger.warning("Overlapped local scoring failed; scoring sequentially")
+        return None
+
+
+def _project_prescored(
+    prescored: RerankResult | None, voyage_chunks: list[RetrievedChunk]
+) -> RerankResult | None:
+    """Carry pool scores onto Voyage's picks, in Voyage's order.
+
+    Returns None unless every pick was scored, so a partial or degraded
+    pre-score can never leave a chunk without its confidence value; the
+    caller then runs the original sequential pass.
+    """
+    if prescored is None or not prescored.reranker_used:
+        return None
+    by_id = {chunk.chunk_id: chunk for chunk in prescored.chunks}
+    if any(chunk.chunk_id not in by_id for chunk in voyage_chunks):
+        return None
+    projected = [
+        replace(
+            chunk,
+            rerank_score=by_id[chunk.chunk_id].rerank_score,
+            normalised_rerank_score=by_id[chunk.chunk_id].normalised_rerank_score,
+        )
+        for chunk in voyage_chunks
+    ]
+    return replace(
+        prescored,
+        chunks=projected,
+        candidate_count=len(projected),
+        provider_raw_scores={
+            chunk.chunk_id: prescored.provider_raw_scores.get(chunk.chunk_id)
+            for chunk in voyage_chunks
+        },
+        provider_order=[chunk.chunk_id for chunk in voyage_chunks],
+    )
+
+
+#: Seconds Voyage is skipped after each transient failure. A rejected
+#: request or malformed body is not here: those are not outages.
+_VOYAGE_COOLDOWN_S: dict[str, float] = {
+    "voyage_timeout": 30.0,
+    "voyage_unavailable": 60.0,
+    "voyage_rate_limited": 60.0,
+}
+
+
 class ConfiguredReranker:
     """Select the configured provider once, with an explicit local fallback."""
 
@@ -234,6 +290,10 @@ class ConfiguredReranker:
         self._local_lock = threading.Lock()
         self._voyage_instance: VoyageReranker | None = None
         self._voyage_lock = threading.Lock()
+        self._prescore_executor: ThreadPoolExecutor | None = None
+        self._prescore_lock = threading.Lock()
+        self._voyage_cooling_until = 0.0
+        self._clock: Callable[[], float] = time.monotonic
 
     def _local_reranker(self) -> CrossEncoderReranker:
         if self._local is None:
@@ -248,10 +308,12 @@ class ConfiguredReranker:
 
     @property
     def is_model_loaded(self) -> bool:
-        if self.settings.reranker_provider == "voyage" and self._local is None:
-            # Hosted readiness is configuration readiness; no startup request
-            # is made because that would send data and consume quota.
-            return self._voyage_configured
+        if self.settings.reranker_provider == "voyage":
+            # Voyage chooses the order, but the graph scores that order with
+            # the local cross-encoder before evidence grading. Readiness must
+            # therefore wait for the local scorer; otherwise a first user
+            # request pays the full model-load cost.
+            return bool(self._local and self._local.is_model_loaded)
         return bool(self._local and self._local.is_model_loaded)
 
     @property
@@ -272,9 +334,10 @@ class ConfiguredReranker:
         if not self.settings.reranker_enabled:
             return True
         if self.settings.reranker_provider == "voyage":
-            # Preserve the hosted fast path: do not allocate local model RAM
-            # unless a hosted request actually fails and needs fallback.
-            return self._voyage_configured
+            # The local scorer is part of the normal Voyage path, not only its
+            # failure path. Load it before readiness opens so a request never
+            # blocks on Hugging Face metadata and model construction.
+            return self._voyage_configured and self._local_reranker().warmup()
         return self._local_reranker().warmup()
 
     def _voyage(self) -> VoyageReranker:
@@ -295,6 +358,50 @@ class ConfiguredReranker:
             voyage, self._voyage_instance = self._voyage_instance, None
         if voyage is not None:
             voyage.close()
+        with self._prescore_lock:
+            executor, self._prescore_executor = self._prescore_executor, None
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    def _voyage_cooling(self) -> bool:
+        if not getattr(self.settings, "hosted_rerank_cooldown_enabled", False):
+            return False
+        return self._clock() < self._voyage_cooling_until
+
+    def _record_voyage_outcome(self, result: RerankResult) -> None:
+        if result.reranker_used:
+            self._voyage_cooling_until = 0.0
+            return
+        cooldown = _VOYAGE_COOLDOWN_S.get(result.failure or "")
+        if cooldown is not None:
+            self._voyage_cooling_until = self._clock() + cooldown
+
+    def _start_prescore(
+        self, query: str, candidates: list[RetrievedChunk]
+    ) -> Future[RerankResult] | None:
+        """Begin local scoring of the whole Voyage candidate pool.
+
+        Runs while the hosted request is on the network, when the CPU would
+        otherwise sit idle. The request's context is copied so the scorer
+        still sees the request deadline.
+        """
+        if not getattr(self.settings, "reranker_overlap_local_scoring", False):
+            return None
+        if not candidates:
+            return None
+        with self._prescore_lock:
+            if self._prescore_executor is None:
+                self._prescore_executor = ThreadPoolExecutor(
+                    max_workers=2, thread_name_prefix="rerank-prescore"
+                )
+            executor = self._prescore_executor
+        context = contextvars.copy_context()
+        return executor.submit(
+            context.run,
+            self._local_reranker().score_fixed_order_with_diagnostics,
+            query,
+            list(candidates),
+        )
 
     def _local_result(
         self,
@@ -331,11 +438,14 @@ class ConfiguredReranker:
         *,
         top_k: int,
         candidate_top_k: int,
+        prescored: RerankResult | None = None,
     ) -> RerankResult:
         """Attach BGE confidence scores without letting BGE reorder Voyage evidence."""
-        scored = self._local_reranker().score_fixed_order_with_diagnostics(
-            query, voyage_result.chunks
-        )
+        scored = _project_prescored(prescored, voyage_result.chunks)
+        if scored is None:
+            scored = self._local_reranker().score_fixed_order_with_diagnostics(
+                query, voyage_result.chunks
+            )
         if not scored.reranker_used:
             # A hosted order without BGE-compatible confidence values must not
             # reach the evidence pipeline. Re-run the established local path;
@@ -425,13 +535,33 @@ class ConfiguredReranker:
                 actual_provider="voyage",
                 confidence_score_source="none",
             )
+        elif self._voyage_cooling():
+            # Voyage failed moments ago; the local path is the same fallback
+            # the failure would have reached, minus the hosted timeout.
+            blocked = RerankResult(
+                query=query,
+                chunks=chunks[:hosted_top_k],
+                candidate_count=min(len(chunks), hosted_candidates),
+                failure="voyage_cooling_down",
+                failure_stage="circuit_open",
+                requested_provider="voyage",
+                actual_provider="voyage",
+                confidence_score_source="none",
+            )
         else:
+            prescore = self._start_prescore(query, chunks[:hosted_candidates])
             blocked = self._voyage().rerank_with_diagnostics(
                 query, chunks, top_k=hosted_top_k, candidate_top_k=hosted_candidates
             )
+            self._record_voyage_outcome(blocked)
             if blocked.reranker_used:
                 hybrid = self._score_voyage_order_with_bge(
-                    query, blocked, chunks, top_k=top_k, candidate_top_k=candidate_top_k
+                    query,
+                    blocked,
+                    chunks,
+                    top_k=top_k,
+                    candidate_top_k=candidate_top_k,
+                    prescored=_await_prescore(prescore),
                 )
                 return replace(
                     hybrid,

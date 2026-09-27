@@ -77,11 +77,18 @@ from src.reranking import (
     reranker_model_load_error,
     warmup_reranker_model,
 )
-from src.retrieval.bm25 import get_bm25_index, refresh_bm25_index
+from src.retrieval.bm25 import is_bm25_index_built
 from src.retrieval.embeddings import (
     is_model_loaded,
     model_load_error,
     warmup_embedding_model,
+)
+from src.retrieval.memory_index import (
+    memory_index_status,
+    refresh_corpus_indexes,
+    start_corpus_refresher,
+    stop_corpus_refresher,
+    warmup_corpus_indexes,
 )
 from src.retrieval.vector_store import close_pool, count_chunks, init_schema
 from src.self_healing.graph import NODE_NAMES, SelfHealingGraph
@@ -140,14 +147,18 @@ async def lifespan(app: FastAPI):
         for target, name in (
             (warmup_embedding_model, "embedding-warmup"),
             (warmup_reranker_model, "reranker-warmup"),
+            # BM25 and the in-memory dense index, from one database snapshot.
+            (warmup_corpus_indexes, "corpus-index-warmup"),
         ):
             threading.Thread(target=target, name=name, daemon=True).start()
+        start_corpus_refresher()
     elif database_ready:
         logger.info("Skipping automatic model warmup until the corpus is ingested")
     else:
         logger.info("Skipping automatic model warmup while the database is unavailable")
 
     yield
+    stop_corpus_refresher()
     close_reranker()
     close_pool()
     shutdown_tracing()
@@ -475,6 +486,21 @@ def ready(settings: SettingsDep, response: JSONResponse = None) -> Any:  # noqa:
         )
     checks["retrieval"] = retrieval_reranker
 
+    # Sparse retrieval is half of every query. Declaring readiness before the
+    # index exists would move its construction onto the first request.
+    if checks.get("database", {}).get("status") == "ok":
+        if is_bm25_index_built():
+            checks["bm25_index"] = {"status": "built"}
+        else:
+            checks["bm25_index"] = {"status": "building"}
+            problems.append("BM25 index still building")
+        dense = memory_index_status()
+        checks["dense_index"] = dense
+        # Only the memory backend has something to build. Opening readiness
+        # before it exists would send the first queries to the database.
+        if dense["backend"] == "memory" and not dense["built"]:
+            problems.append("in-memory dense index still building")
+
     if problems:
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -602,6 +628,11 @@ def to_response(state: dict[str, Any], summary: dict[str, Any], latency_ms: floa
         llm_calls_used=int(summary.get("llm_calls_used") or 0),
         llm_call_limit=int(summary.get("llm_call_limit") or 0),
         budget_exhausted=bool(summary.get("budget_exhausted")),
+        llm_provider=summary.get("llm_provider") or None,
+        llm_fallbacks=[str(item) for item in summary.get("llm_fallbacks") or []],
+        llm_skipped_providers=[str(item) for item in summary.get("llm_skipped_providers") or []],
+        regeneration_count=int(summary.get("regeneration_count") or 0),
+        speculative_generation=bool(summary.get("generation_speculative")),
     )
 
 
@@ -666,6 +697,17 @@ def query(
 
     summary = summarise(state)
     latency_ms = (time.perf_counter() - started) * 1000.0
+
+    if summary.get("failure_reason") == "provider_error":
+        runtime_metrics.record_failure("provider_unavailable")
+        annotate_query_span(request_id=request_id, failure_reason="provider_unavailable")
+        log_event("query_failed", failure_reason="provider_unavailable")
+        return _error(
+            request_id,
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "provider_unavailable",
+            "The answering provider is temporarily unavailable. Retry shortly.",
+        )
 
     response = to_response(state, summary, latency_ms)
     runtime_metrics.record_completed(
@@ -755,9 +797,13 @@ def retrieve(request: QueryRequest, settings: SettingsDep, _admin: AdminDep) -> 
 
 @app.post("/admin/reindex")
 def reindex(_admin: AdminDep) -> dict[str, int]:
-    """Rebuild the in-memory BM25 index after ingestion."""
-    index = refresh_bm25_index()
-    return {"bm25_documents": index.size, "chunks_indexed": count_chunks()}
+    """Rebuild the in-memory BM25 and dense indexes after ingestion.
+
+    The background refresher also notices changes on its own; this makes a
+    freshly ingested corpus visible immediately rather than within a minute.
+    """
+    rebuilt = refresh_corpus_indexes()
+    return {**rebuilt, "chunks_indexed": count_chunks()}
 
 
 @app.post("/admin/warmup")
@@ -765,7 +811,7 @@ def warmup(_admin: AdminDep, settings: SettingsDep) -> dict[str, str]:
     """Load the embedding and reranker models ahead of the first user request."""
     embedding_ready = warmup_embedding_model()
     reranker_ready = not settings.reranker_enabled or warmup_reranker_model()
-    get_bm25_index()
+    warmup_corpus_indexes()
     if not embedding_ready or not reranker_ready:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -777,7 +823,16 @@ def warmup(_admin: AdminDep, settings: SettingsDep) -> dict[str, str]:
 @app.get("/admin/metrics")
 def metrics(_admin: AdminDep) -> dict[str, Any]:
     """Process-local operational aggregates with no customer or corpus data."""
-    return runtime_metrics.snapshot()
+    from src.generation.llm_routing import PROVIDER_HEALTH
+    from src.generation.rate_limit import budget_snapshot
+
+    return {
+        **runtime_metrics.snapshot(),
+        # Why a provider is being passed over, and how much of its published
+        # budget this process has spent. Counters only; no prompts or answers.
+        "provider_cooldowns": PROVIDER_HEALTH.snapshot(),
+        "provider_token_budgets": budget_snapshot(),
+    }
 
 
 @app.get("/metrics", include_in_schema=False)

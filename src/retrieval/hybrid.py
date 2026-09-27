@@ -28,9 +28,11 @@ from src.config import get_settings
 from src.retrieval.bm25 import get_bm25_index
 from src.retrieval.deduplication import DeduplicationResult, deduplicate, deduplication_config
 from src.retrieval.embeddings import embed_query
+
+# In memory when the index is built; the unchanged pgvector query otherwise.
+from src.retrieval.memory_index import dense_search
 from src.retrieval.rrf import reciprocal_rank_fusion, rrf_config
 from src.retrieval.types import RetrievedChunk
-from src.retrieval.vector_store import dense_search
 from src.timing import elapsed_ms
 
 logger = logging.getLogger(__name__)

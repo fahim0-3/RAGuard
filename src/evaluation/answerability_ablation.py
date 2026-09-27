@@ -207,7 +207,16 @@ def _build_answerability_chain(
         ANSWERABILITY_DECISION_SCHEMA,
         timeout_s=timeout_s,
         max_retries=max_retries,
+        output_validator=_validate_answerability_output,
     )
+
+
+def _validate_answerability_output(raw: Any) -> Any:
+    """Reject an incomplete provider payload inside the failover boundary."""
+    if not isinstance(raw, dict):
+        raise ValueError("structured response was not an object")
+    AnswerabilityDecision.model_validate(raw)
+    return raw
 
 
 def _serialized_answerability_schema() -> str:
@@ -278,6 +287,10 @@ def _safe_sufficiency(decision: AnswerabilityDecision) -> bool:
     ) or (
         decision.question_resolution == "negative" and decision.proposition_status == "contradicted"
     )
+    # Broad overview questions are covered by `request_scope == "general_policy"`
+    # below, which the grader derives from the evidence. There is deliberately
+    # no branch keyed to question wording: that is how a contract stops being a
+    # contract.
     return bool(
         decision.relevant
         and decision.requested_outcome
@@ -308,7 +321,7 @@ def _exception_category(exc: Exception) -> tuple[str, str]:
         return retryable, {
             "rate_limited": "provider rate limit",
             "timeout": "provider timeout",
-            "structured_output_failure": "provider rejected strict structured output",
+            "structured_output_failure": "provider returned unusable structured output",
             "provider_unavailable": "provider unavailable",
         }[retryable]
     if isinstance(exc, json.JSONDecodeError):

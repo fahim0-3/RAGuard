@@ -98,6 +98,11 @@ def client(monkeypatch):
     # test_model_readiness.py.
     monkeypatch.setattr("api.main.is_model_loaded", lambda: True)
     monkeypatch.setattr("api.main.is_reranker_model_loaded", lambda: True)
+    monkeypatch.setattr("api.main.is_bm25_index_built", lambda: True)
+    monkeypatch.setattr(
+        "api.main.memory_index_status",
+        lambda: {"backend": "memory", "built": True, "chunks": 22},
+    )
     monkeypatch.setattr("api.main.loaded_reranker_model_name", lambda: "test-reranker")
     from api.admission import query_admission
     from api.observability import runtime_metrics
@@ -126,6 +131,24 @@ def test_health_is_ok(client):
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+def test_grader_provider_failure_returns_controlled_503(client):
+    use_graph(
+        StubGraph(
+            graph_state(
+                final_outcome="abstain",
+                final_answer="",
+                failure_reason="provider_error",
+                evidence_grade={"sufficient": False, "failure_category": "provider_unavailable"},
+            )
+        )
+    )
+
+    response = client.post("/query", json={"query": "What is the refund policy?"})
+
+    assert response.status_code == 503
+    assert response.json()["error"] == "provider_unavailable"
 
 
 def test_health_does_not_touch_the_database(client, monkeypatch):
@@ -828,3 +851,87 @@ def test_end_to_end_query_through_the_real_stack():
         for citation in body["citations"]:
             assert citation["policy_id"]
             assert citation["source"]
+
+
+# --------------------------------------------------------------------------
+# Routing observability fields stay privacy-safe
+# --------------------------------------------------------------------------
+
+
+def test_routing_fields_are_projected_onto_the_response(client):
+    use_graph(
+        StubGraph(
+            graph_state(
+                llm_provider="gemini",
+                llm_fallbacks=["groq:rate_limited"],
+                llm_skipped_providers=["openrouter:provider_unavailable"],
+                regeneration_count=1,
+                generation_speculative=True,
+            )
+        )
+    )
+
+    body = client.post("/query", json={"query": "How long do refunds take?"}).json()
+
+    assert body["llm_provider"] == "gemini"
+    assert body["llm_fallbacks"] == ["groq:rate_limited"]
+    assert body["llm_skipped_providers"] == ["openrouter:provider_unavailable"]
+    assert body["regeneration_count"] == 1
+    assert body["speculative_generation"] is True
+
+
+def test_a_real_provider_failure_reaches_the_response_as_a_category_only(client):
+    """The exception can echo a key, an org id or prompt text; none may surface."""
+    from src.config import Settings
+    from src.generation.llm_routing import advance_route, route_context
+
+    class LeakyRateLimit(RuntimeError):
+        status_code = 429
+
+    settings = Settings(
+        _env_file=None,
+        llm_routing_mode="dynamic",
+        groq_api_key="r" * 32,
+        google_api_key="g" * 32,
+    )
+    with route_context(settings) as route:
+        advance_route(LeakyRateLimit("org_secret123 key=gsk_leak prompt: refund for Jane"))
+        fallbacks = list(route.fallback_reasons)
+
+    use_graph(StubGraph(graph_state(llm_provider="gemini", llm_fallbacks=fallbacks)))
+    text = client.post("/query", json={"query": "How long do refunds take?"}).text
+
+    assert '"groq:rate_limited"' in text
+    for leaked in ("org_secret123", "gsk_leak", "Jane", "prompt:"):
+        assert leaked not in text
+
+
+# --------------------------------------------------------------------------
+# Readiness waits for the in-memory dense index
+# --------------------------------------------------------------------------
+
+
+def test_ready_waits_for_the_in_memory_dense_index(client, monkeypatch):
+    """Opening early would send the first queries to the database."""
+    monkeypatch.setattr("api.main.count_chunks", lambda: 22)
+    monkeypatch.setattr(
+        "api.main.memory_index_status",
+        lambda: {"backend": "memory", "built": False, "chunks": 0},
+    )
+    use_settings(llm_provider="ollama")
+
+    response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert "dense index" in response.json()["detail"]
+
+
+def test_the_pgvector_backend_needs_no_resident_index(client, monkeypatch):
+    monkeypatch.setattr("api.main.count_chunks", lambda: 22)
+    monkeypatch.setattr(
+        "api.main.memory_index_status",
+        lambda: {"backend": "pgvector", "built": False, "chunks": 0},
+    )
+    use_settings(llm_provider="ollama")
+
+    assert client.get("/ready").status_code == 200

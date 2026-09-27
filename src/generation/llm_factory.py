@@ -22,11 +22,18 @@ imports this module constantly and must not need a key to do so.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from functools import lru_cache
 from typing import Any, Literal
 
 from src.config import get_settings
-from src.generation.llm_routing import advance_route, current_provider
+from src.generation.llm_routing import (
+    advance_route,
+    current_provider,
+    current_route,
+    record_provider_success,
+)
+from src.generation.rate_limit import record_usage
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +183,12 @@ def _build_groq(
     # the graph's call allowance.
     retries = settings.groq_max_retries if max_retries is None else max_retries
     retries = min(retries, settings.groq_max_retries)
+    effort = (
+        settings.groq_judge_reasoning_effort if role == "judge" else settings.groq_reasoning_effort
+    )
+    # Only sent when configured, so an unset value keeps the provider
+    # default and a model without the parameter is never sent it.
+    extra: dict[str, Any] = {"reasoning_effort": effort} if effort else {}
     return ChatGroq(
         model=model_name_for(role),
         api_key=settings.groq_api_key,
@@ -183,6 +196,7 @@ def _build_groq(
         max_tokens=settings.llm_max_output_tokens,
         timeout=timeout_s if timeout_s is not None else settings.llm_request_timeout_s,
         max_retries=retries,
+        **extra,
     )
 
 
@@ -266,7 +280,8 @@ def get_chat_model(
 
 def uses_native_structured_output() -> bool:
     """Whether the selected provider is bound to a JSON schema by this factory."""
-    return _selected_provider() == "groq"
+    settings = get_settings()
+    return _selected_provider() == "groq" and settings.groq_native_structured_output
 
 
 def get_structured_chat_model(
@@ -276,17 +291,26 @@ def get_structured_chat_model(
     timeout_s: float | None = None,
     max_retries: int | None = None,
 ) -> Any:
-    """Return a schema-bound Groq model, otherwise the ordinary chat model.
+    """Return a schema-bound Groq model when its strict mode is enabled.
 
-    Gemini, OpenRouter, and Ollama retain prompt-plus-parser behavior. Groq's
-    GPT-OSS models support strict native JSON schemas, so use constrained
-    decoding when Groq is explicitly selected instead of trusting a prompt to
-    produce parseable JSON.
+    Gemini, OpenRouter, and Ollama use prompt-plus-parser behavior. Groq can
+    use strict native schemas when configured, but prompt-plus-parser is the
+    default because the active GPT-OSS model has rejected strict schemas at
+    the provider boundary.
     """
     model = get_chat_model(role, timeout_s=timeout_s, max_retries=max_retries)
     if not uses_native_structured_output():
         return model
     return model.with_structured_output(schema, method="json_schema", strict=True)
+
+
+def _total_tokens(usage: Any) -> int:
+    """Tokens billed across every model call the callback saw."""
+    try:
+        per_model = usage.usage_metadata.values()
+    except AttributeError:  # pragma: no cover - defensive across LangChain versions
+        return 0
+    return sum(int(entry.get("total_tokens", 0) or 0) for entry in per_model)
 
 
 def build_json_chain(
@@ -296,6 +320,7 @@ def build_json_chain(
     *,
     timeout_s: float | None = None,
     max_retries: int | None = None,
+    output_validator: Callable[[Any], Any] | None = None,
 ) -> Any:
     """Build a JSON chain with one budget-accounted dynamic-provider failover.
 
@@ -303,6 +328,7 @@ def build_json_chain(
     fallback reserves a second permit before re-invoking the complete chain, so
     it cannot silently exceed the graph's execution allowance.
     """
+    from langchain_core.callbacks import get_usage_metadata_callback
     from langchain_core.runnables import RunnableLambda
 
     def build_once(call_timeout_s: float | None, call_max_retries: int | None) -> Any:
@@ -313,21 +339,45 @@ def build_json_chain(
             max_retries=call_max_retries,
         )
         chain = prompt | model
-        if uses_native_structured_output():
-            return chain
-        from langchain_core.output_parsers import JsonOutputParser
+        if not uses_native_structured_output():
+            from langchain_core.output_parsers import JsonOutputParser
 
-        return chain | JsonOutputParser()
+            chain = chain | JsonOutputParser()
+        if output_validator is not None:
+            chain = chain | RunnableLambda(output_validator)
+        return chain
 
     def invoke_with_failover(value: Any) -> Any:
         call_timeout_s = timeout_s
         call_max_retries = max_retries
         while True:
+            # Read before the call: a concurrent call of the same request may
+            # move the shared route while this one is in flight.
+            route = current_route()
+            attempt_provider = route.provider if route is not None else None
             try:
-                return build_once(call_timeout_s, call_max_retries).invoke(value)
+                # The callback reports the tokens the provider actually billed,
+                # which is what the budget must be charged: an estimate decides
+                # whether to start a call, never what it cost.
+                with get_usage_metadata_callback() as usage:
+                    result = build_once(call_timeout_s, call_max_retries).invoke(value)
+                if attempt_provider is not None:
+                    record_usage(attempt_provider, _total_tokens(usage))
+                    # A provider that answers is healthy again, whatever
+                    # its cooldown said a moment ago.
+                    record_provider_success(attempt_provider)
+                return result
             except Exception as exc:  # noqa: BLE001 - providers expose varied exception types
-                if not advance_route(exc):
+                if not advance_route(exc, failed_provider=attempt_provider):
                     raise
+                # A silent switch looks identical in a trace to a slow provider.
+                # The type and role are safe to record; the message is not,
+                # because a provider may echo prompt content back in it.
+                logger.warning(
+                    "Provider failover [role=%s, exception_type=%s]",
+                    role,
+                    type(exc).__name__,
+                )
                 # The original node spent its own permit. A provider switch is
                 # another real inference attempt and must claim another slot.
                 from src.config import get_settings as get_runtime_settings
@@ -339,7 +389,15 @@ def build_json_chain(
                     default_timeout_s=settings.llm_request_timeout_s,
                     default_max_retries=settings.llm_max_retries,
                 )
-                call_timeout_s = permit.timeout_s
+                # A failover is a fresh permit, but it must not grant more time
+                # than the caller allowed for the first attempt. Without this,
+                # a stage with a tight ceiling silently widens to the general
+                # request timeout on every provider switch.
+                call_timeout_s = (
+                    permit.timeout_s
+                    if timeout_s is None
+                    else min(float(timeout_s), permit.timeout_s)
+                )
                 call_max_retries = permit.max_retries
 
     return RunnableLambda(invoke_with_failover)

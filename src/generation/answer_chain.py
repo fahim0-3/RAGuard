@@ -85,12 +85,18 @@ def restrict_context(
 
 
 def format_context(chunks: list[RetrievedChunk]) -> str:
-    """Render passages with the exact citation labels the model must reuse."""
+    """Render passages with the exact citation labels the model must reuse.
+
+    A passage carries one handle and no other. An earlier rendering also
+    numbered the passages (`[1] citation_label: refund_policy.txt#0`), and
+    models blended the two, emitting labels such as `[1]#1` that resolve to
+    nothing and reject an otherwise grounded answer. A single handle per
+    passage removes the choice.
+    """
     if not chunks:
         return "(no passages retrieved)"
     return "\n\n".join(
-        f"[{index}] citation_label: {chunk.citation_label}\n{chunk.content}"
-        for index, chunk in enumerate(chunks, start=1)
+        f"citation_label: {chunk.citation_label}\n{chunk.content}" for chunk in chunks
     )
 
 
@@ -159,19 +165,44 @@ def _answer_sentences(answer: str) -> list[str]:
     ]
 
 
+def _normalise_claim_text(text: str) -> str:
+    """Collapse whitespace so segmentation, not formatting, is what is compared."""
+    return " ".join(text.split())
+
+
 def validate_claim_citations(
     answer: str, claim_citations: list[ClaimCitation], chunks: list[RetrievedChunk]
 ) -> tuple[list[ClaimCitation], list[Citation], list[str], str | None]:
-    """Validate an exact, per-sentence mapping from answer text to evidence.
+    """Validate that the cited claims cover the whole answer, in order.
 
     The response may carry a convenient flattened citation list, but that list
-    is derived from this map. A citation for one sentence can no longer silently
-    warrant a different sentence in the answer.
+    is derived from this map. A citation for one claim can no longer silently
+    warrant a different part of the answer.
+
+    The claims must *tile* the answer: joined in order they must reproduce it
+    exactly, so every word the customer reads sits inside exactly one cited
+    claim. Nothing uncited can reach the answer, nothing can be reordered, and
+    no claim can assert text the answer does not contain.
+
+    What this deliberately does not require is that the model segment the answer
+    the same way a regular expression does. The previous rule compared the claim
+    list against `_answer_sentences` element by element, so a model that treated
+    "Credit and debit cards: 5 to 7 business days." as one clause rather than
+    two had a correct, fully cited answer rejected. That is a disagreement about
+    punctuation, not about grounding, and it cost roughly two thirds of
+    otherwise valid answers.
     """
-    expected_claims = _answer_sentences(answer)
-    supplied_claims = [claim.claim for claim in claim_citations]
-    if not expected_claims or supplied_claims != expected_claims:
-        return [], [], [], "claim citations must match every answer sentence in order"
+    normalised_answer = _normalise_claim_text(answer)
+    supplied_claims = [_normalise_claim_text(claim.claim) for claim in claim_citations]
+    if not normalised_answer or not supplied_claims:
+        return [], [], [], "every part of the answer requires a cited claim"
+    if " ".join(supplied_claims) != normalised_answer:
+        return (
+            [],
+            [],
+            [],
+            "claim citations must reproduce the whole answer, in order, with nothing added",
+        )
 
     canonical: list[ClaimCitation] = []
     resolved: list[Citation] = []
@@ -182,7 +213,7 @@ def validate_claim_citations(
         claim_resolved, claim_invalid = validate_citations(claim.citations, chunks)
         invalid.extend(claim_invalid)
         if not claim_resolved:
-            return [], [], invalid, "every answer sentence requires a supplied citation"
+            return [], [], invalid, "every claim requires a supplied citation"
         labels = [citation.citation_label for citation in claim_resolved]
         canonical.append(ClaimCitation(claim=claim.claim, citations=labels))
         for citation in claim_resolved:
@@ -341,6 +372,16 @@ def generate_grounded_answer(
             rejected=invalid,
         )
     if claim_error or not citations:
+        # Previously silent. A rejection here means the generator produced text
+        # it could not map to evidence, which is indistinguishable in a trace
+        # from a provider failure unless the reason is recorded.
+        logger.warning(
+            "Rejecting answer that could not be traced to evidence [reason=%s, "
+            "answer_sentences=%d, claim_citations=%d]",
+            claim_error or "no resolvable citation",
+            len(_answer_sentences(answer_text)),
+            len(payload.claim_citations),
+        )
         return _failure(
             question,
             "rejected_invalid_citation",

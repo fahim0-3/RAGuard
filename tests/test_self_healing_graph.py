@@ -9,6 +9,8 @@ No API key and no database are required.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from src.reranking import RerankResult
@@ -196,6 +198,28 @@ INSUFFICIENT = EvidenceGrade(
     rationale="weak",
 )
 SUFFICIENT = EvidenceGrade(relevant=True, sufficient=True, confidence=0.95, rationale="ok")
+GRADER_PROVIDER_FAILURE = EvidenceGrade(
+    relevant=False,
+    sufficient=False,
+    confidence=0.0,
+    missing_information=["provider unavailable"],
+    rationale="provider unavailable",
+    failure_category="provider_unavailable",
+    failure_reason="provider unavailable",
+    failure_phase="provider_execution",
+    failure_exception_type="ConnectionError",
+)
+GRADER_TIMEOUT = EvidenceGrade(
+    relevant=False,
+    sufficient=False,
+    confidence=0.0,
+    missing_information=["provider timeout"],
+    rationale="provider timeout",
+    failure_category="timeout",
+    failure_reason="provider timeout",
+    failure_phase="provider_execution",
+    failure_exception_type="TimeoutError",
+)
 
 
 # --------------------------------------------------------------------------
@@ -297,6 +321,32 @@ def test_retries_append_latency_samples_instead_of_overwriting(world):
 
     assert len(result["stage_latency_samples_ms"][NODE_RETRIEVE]) == 3
     assert len(result["stage_latency_samples_ms"][NODE_REWRITER]) == 2
+
+
+def test_genuine_insufficient_evidence_uses_the_retry_loop(world):
+    world["grades"] = [INSUFFICIENT, SUFFICIENT]
+
+    result = run(world)
+
+    assert result["final_outcome"] == "answer"
+    assert result["retry_count"] == 1
+    assert result["node_sequence"].count(NODE_REWRITER) == 1
+    assert result["node_sequence"].count(NODE_RETRIEVE) == 2
+    assert result["node_sequence"].count(NODE_RERANK) == 2
+
+
+@pytest.mark.parametrize("failure", [GRADER_PROVIDER_FAILURE, GRADER_TIMEOUT])
+def test_grader_infrastructure_failure_does_not_retry(world, failure):
+    world["grades"] = [failure]
+
+    result = run(world)
+
+    assert result["final_outcome"] == "abstain"
+    assert result["failure_reason"] == "provider_error"
+    assert result["retry_count"] == 0
+    assert NODE_REWRITER not in result["node_sequence"]
+    assert result["node_sequence"].count(NODE_RETRIEVE) == 1
+    assert result["node_sequence"].count(NODE_RERANK) == 1
 
 
 # --------------------------------------------------------------------------
@@ -1042,7 +1092,6 @@ def test_broad_policy_overview_does_not_override_a_negative_judge():
 
     assert grade.sufficient is False
     assert grade.missing_information
-    assert grade.signals["policy_overview_match"] is True
 
 
 def test_overview_override_does_not_accept_adjacent_unsupported_topics():
@@ -1076,7 +1125,6 @@ def test_overview_override_does_not_accept_adjacent_unsupported_topics():
     )
 
     assert grade.sufficient is False
-    assert grade.signals["policy_overview_match"] is False
 
 
 def test_rewriter_drops_generic_missing_information(monkeypatch):
@@ -1141,3 +1189,440 @@ def test_identifier_match_respects_word_boundaries():
     signals = deterministic_signals("What does PAY-402 mean?", chunks)
 
     assert signals["matched_policy_ids"] == []
+
+
+def test_rejected_citation_mapping_is_repaired_by_one_regeneration(world):
+    """A draft the model failed to cite is a defect to repair, not a verdict."""
+    rejected = StubAnswer(
+        answer="",
+        outcome="rejected_invalid_citation",
+        citations=[],
+        confidence=0.0,
+        failure_reason="claim citations must match every answer sentence in order",
+    )
+    answered = world["answer"]
+    drafts = [rejected, answered]
+
+    def fake_generate(question, chunks, **kwargs):
+        world["generation_calls"].append({"question": question, "chunks": list(chunks), **kwargs})
+        return drafts[min(len(world["generation_calls"]) - 1, len(drafts) - 1)]
+
+    import src.generation.answer_chain as answer_chain_module
+
+    original = answer_chain_module.generate_grounded_answer
+    answer_chain_module.generate_grounded_answer = fake_generate
+    try:
+        result = run(world, verifier=StubVerifier(supported=True))
+    finally:
+        answer_chain_module.generate_grounded_answer = original
+
+    assert result["final_outcome"] == "answer"
+    assert result["regeneration_count"] == 1
+    assert len(world["generation_calls"]) == 2
+    feedback = world["generation_calls"][1]["verification_feedback"]
+    assert "claim citations must match every answer sentence" in feedback
+
+
+def test_rejected_citation_mapping_abstains_once_the_budget_is_spent(world):
+    """The repair path is bounded by the same regeneration budget as verification."""
+    rejected = StubAnswer(
+        answer="",
+        outcome="rejected_invalid_citation",
+        citations=[],
+        confidence=0.0,
+        failure_reason="claim citations must match every answer sentence in order",
+    )
+
+    def fake_generate(question, chunks, **kwargs):
+        world["generation_calls"].append({"question": question, "chunks": list(chunks), **kwargs})
+        return rejected
+
+    import src.generation.answer_chain as answer_chain_module
+
+    original = answer_chain_module.generate_grounded_answer
+    answer_chain_module.generate_grounded_answer = fake_generate
+    try:
+        result = run(world, verifier=StubVerifier(supported=True))
+    finally:
+        answer_chain_module.generate_grounded_answer = original
+
+    assert result["final_outcome"] == "abstain"
+    assert len(world["generation_calls"]) == 2, "one repair attempt, then stop"
+
+
+class UnavailableJudgeVerifier(StubVerifier):
+    """The entailment provider failed: claims went unjudged, not disproved."""
+
+    def verify(self, answer, citations, chunks, claim_citations=None):
+        self.calls += 1
+        return VerificationResult(
+            supported=False,
+            checked=True,
+            verifier="entailment",
+            reason="1 of 1 claim(s) not entailed",
+            judge_unavailable=True,
+        )
+
+
+def test_an_unavailable_judge_abstains_without_spending_a_regeneration(world):
+    """A second draft would hit the same unavailable judge and double the cost."""
+    verifier = UnavailableJudgeVerifier()
+
+    result = run(world, verifier=verifier)
+
+    assert result["final_outcome"] == "abstain"
+    assert result["abstain_reason"] == "provider_error"
+    assert verifier.calls == 1
+    assert result["regeneration_count"] == 0
+    assert len(world["generation_calls"]) == 1
+
+
+def test_a_genuinely_unsupported_draft_still_gets_its_regeneration(world):
+    """The fix above must not remove the repair path for real grounding failures."""
+    verifier = StubVerifier(supported=False)
+
+    result = run(world, verifier=verifier)
+
+    assert result["regeneration_count"] == 1
+    assert len(world["generation_calls"]) == 2
+
+
+def test_the_entailment_verifier_flags_an_unreachable_judge(monkeypatch, sample_chunks):
+    from src.self_healing import verification
+
+    monkeypatch.setattr(verification, "judge_claim_batch", lambda _items: None)
+    verifier = verification.EntailmentVerifier(use_llm=True)
+    label = sample_chunks[0].citation_label
+
+    result = verifier.verify(
+        "Card refunds usually arrive within one working week.",
+        [label],
+        sample_chunks,
+        [{"claim": "Card refunds usually arrive within one working week.", "citations": [label]}],
+    )
+
+    assert result.supported is False
+    assert result.judge_unavailable is True
+
+
+# --------------------------------------------------------------------------
+# Speculative generation: overlapped with grading, never used unless graded
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def speculative(world, monkeypatch):
+    """Make every first attempt eligible, and give each draft its own identity."""
+    monkeypatch.setattr(graph_module, "passes_deterministic_gate", lambda *_a: True)
+    drafts: list[StubAnswer] = []
+
+    def fake_generate(question, chunks, **kwargs):
+        world["generation_calls"].append({"question": question, "chunks": list(chunks), **kwargs})
+        draft = StubAnswer(answer=f"Draft {len(world['generation_calls'])} for {question}.")
+        drafts.append(draft)
+        return draft
+
+    monkeypatch.setattr("src.generation.answer_chain.generate_grounded_answer", fake_generate)
+    world["drafts"] = drafts
+    return world
+
+
+def test_a_sufficient_first_attempt_uses_the_overlapped_draft(speculative):
+    result = run(speculative)
+
+    assert result["final_outcome"] == "answer"
+    assert result["generation_speculative"] is True
+    assert len(speculative["generation_calls"]) == 1, "no second generation after grading"
+    assert result["final_answer"].startswith("Draft 1")
+
+
+def test_an_insufficient_grade_discards_the_draft_and_the_retry_generates_afresh(speculative):
+    """The discarded draft was generated from evidence the grader rejected."""
+    speculative["grades"] = [INSUFFICIENT, SUFFICIENT]
+
+    result = run(speculative)
+
+    assert result["final_outcome"] == "answer"
+    assert result["generation_speculative"] is False
+    # The shipped draft was generated from the rewritten query's evidence, not
+    # from the first attempt's evidence the grader rejected.
+    assert result["final_answer"].endswith(f"for {result['current_query']}.")
+    assert result["current_query"] != result["original_query"]
+    # The discarded draft finishes on its own thread; wait for it to be recorded.
+    deadline = time.monotonic() + 2.0
+    while len(speculative["generation_calls"]) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(speculative["generation_calls"]) == 2
+
+
+def test_a_provider_failure_grade_never_ships_the_overlapped_draft(speculative):
+    speculative["grades"] = [GRADER_PROVIDER_FAILURE]
+
+    result = run(speculative)
+
+    assert result["final_outcome"] == "abstain"
+    assert result["failure_reason"] == "provider_error"
+    assert "Draft" not in result["final_answer"]
+
+
+def test_a_regeneration_is_never_speculative(speculative):
+    """Regeneration needs the verifier's feedback, which does not exist yet."""
+    verifier = StubVerifier(supported=False)
+
+    run(speculative, verifier=verifier)
+
+    first, second = speculative["generation_calls"]
+    assert first["verification_feedback"] == ""
+    assert "stubbed" in second["verification_feedback"]
+
+
+def test_no_draft_outlives_its_request(speculative):
+    speculative["grades"] = [INSUFFICIENT]
+
+    run(speculative)
+
+    assert graph_module._speculations == {}
+
+
+def test_speculation_is_skipped_when_the_deterministic_gate_fails(world, monkeypatch):
+    """The grader cannot pass evidence the model-free checks reject."""
+    monkeypatch.setattr(graph_module, "passes_deterministic_gate", lambda *_a: False)
+
+    result = run(world)
+
+    assert result["generation_speculative"] is False
+    assert len(world["generation_calls"]) == 1
+
+
+def test_speculation_can_be_disabled(speculative, monkeypatch):
+    from src.config import get_settings
+
+    monkeypatch.setenv("GRAPH_SPECULATIVE_GENERATION", "false")
+    get_settings.cache_clear()
+    try:
+        result = run(speculative)
+    finally:
+        get_settings.cache_clear()
+
+    assert result["generation_speculative"] is False
+    assert len(speculative["generation_calls"]) == 1
+
+
+def test_the_overlapped_draft_counts_against_the_call_budget(speculative):
+    result = run(speculative)
+
+    assert result["llm_calls_used"] >= 2, "grader and the overlapped generation both reserved"
+
+
+def test_a_tight_call_budget_keeps_the_sequential_order(speculative, monkeypatch):
+    """Speculation must never starve the retry loop of the permits it was sized for."""
+    from src.config import get_settings
+
+    monkeypatch.setenv("GRAPH_LLM_CALL_LIMIT", "2")
+    get_settings.cache_clear()
+    try:
+        result = run(speculative)
+    finally:
+        get_settings.cache_clear()
+
+    assert result["generation_speculative"] is False
+
+
+# --------------------------------------------------------------------------
+# The real grader, a provider outage, and the retry budget
+# --------------------------------------------------------------------------
+
+
+class _RaisingChain:
+    def __init__(self, error: Exception):
+        self.error = error
+
+    def invoke(self, _payload):
+        raise self.error
+
+
+def test_a_grader_provider_exception_carries_a_failure_category(monkeypatch):
+    from src.self_healing import evidence_grader
+
+    class Outage(RuntimeError):
+        status_code = 503
+
+    monkeypatch.setattr(
+        evidence_grader, "_build_grader_chain", lambda **_k: _RaisingChain(Outage("down"))
+    )
+
+    grade = evidence_grader.grade_evidence("q", [chunk(1), chunk(2)], use_llm=True)
+
+    assert grade.sufficient is False
+    assert grade.failure_category == "provider_unavailable"
+    assert grade.failure_exception_type == "Outage"
+
+
+def test_unusable_grader_output_is_a_failure_not_weak_evidence(monkeypatch):
+    from src.self_healing import evidence_grader
+
+    class NotADict:
+        def invoke(self, _payload):
+            return "not json"
+
+    monkeypatch.setattr(evidence_grader, "_build_grader_chain", lambda **_k: NotADict())
+
+    grade = evidence_grader.grade_evidence("q", [chunk(1), chunk(2)], use_llm=True)
+
+    assert grade.failure_category == "structured_output_failure"
+
+
+def test_an_outage_during_real_grading_stops_without_rewriting_or_re_retrieving(world, monkeypatch):
+    """End to end with the real grader: the regression seen live with every
+    hosted provider down, where an outage was read as weak evidence and the
+    request rewrote and re-retrieved twice against a dead provider."""
+    from src.self_healing import evidence_grader
+
+    class Outage(RuntimeError):
+        status_code = 503
+
+    monkeypatch.setattr(graph_module, "grade_evidence", evidence_grader.grade_evidence)
+    monkeypatch.setattr(
+        evidence_grader, "_build_grader_chain", lambda **_k: _RaisingChain(Outage("down"))
+    )
+
+    result = run(world)
+
+    assert result["final_outcome"] == "abstain"
+    assert result["failure_reason"] == "provider_error"
+    assert result["retry_count"] == 0
+    assert NODE_REWRITER not in result["node_sequence"]
+    assert result["node_sequence"].count(NODE_RETRIEVE) == 1
+    assert result["node_sequence"].count(NODE_RERANK) == 1
+
+
+# --------------------------------------------------------------------------
+# Zero-relevance evidence skips a grading call that cannot change the verdict
+# --------------------------------------------------------------------------
+
+
+class _CountingChain:
+    def __init__(self, payload: dict):
+        self.payload = payload
+        self.calls = 0
+
+    def invoke(self, _payload):
+        self.calls += 1
+        return self.payload
+
+
+def _grade(chunks, monkeypatch, payload=None):
+    """Grade with a counted stand-in for the model, installed as the real chain."""
+    from src.self_healing import evidence_grader
+
+    chain = _CountingChain(
+        payload or {"relevant": True, "sufficient": True, "confidence": 0.9, "rationale": "ok"}
+    )
+    monkeypatch.setattr(evidence_grader, "_build_grader_chain", lambda **_k: chain)
+    grade = evidence_grader.grade_evidence("Do you sell gaming laptops?", chunks, use_llm=True)
+    return grade, chain
+
+
+def test_zero_relevance_evidence_is_graded_without_calling_the_model(monkeypatch):
+    """The reranker scored everything zero; no model verdict could change that."""
+    chunks = [chunk(1, score=0.0), chunk(2, score=0.0), chunk(3, score=0.0)]
+
+    grade, chain = _grade(chunks, monkeypatch)
+
+    assert chain.calls == 0, "the model was asked a question already settled"
+    assert grade.sufficient is False
+    assert grade.relevant is False
+    assert grade.deterministic_only is True
+
+
+def test_that_skip_is_insufficient_evidence_not_a_provider_failure(monkeypatch):
+    """A failure category would stop the retry loop; this must not."""
+    chunks = [chunk(1, score=0.0), chunk(2, score=0.0)]
+
+    grade, _chain = _grade(chunks, monkeypatch)
+
+    assert grade.failure_category == ""
+    assert grade.missing_information, "the rewriter still receives a reason"
+
+
+def test_the_retry_loop_still_runs_on_zero_relevance_evidence(world, monkeypatch):
+    """End to end: self-healing is unchanged, only the wasted call is gone."""
+    from src.self_healing import evidence_grader
+
+    monkeypatch.setattr(graph_module, "grade_evidence", evidence_grader.grade_evidence)
+    monkeypatch.setattr(
+        evidence_grader, "_build_grader_chain", lambda **_k: _CountingChain({"sufficient": True})
+    )
+    world["retriever"] = StubRetriever([[chunk(1, score=0.0), chunk(2, score=0.0)]])
+
+    result = run(world)
+
+    assert result["final_outcome"] == "abstain"
+    assert result["failure_reason"] != "provider_error"
+    assert result["retry_count"] == 2, "both rewrites still ran"
+    assert result["node_sequence"].count(NODE_REWRITER) == 2
+
+
+def test_a_weak_but_non_zero_score_still_consults_the_model(monkeypatch):
+    """Where a rewrite has a real chance, the model's account of the gap is kept."""
+    chunks = [chunk(1, score=0.2), chunk(2, score=0.15)]
+
+    _grade_result, chain = _grade(chunks, monkeypatch)
+
+    assert chain.calls == 1
+
+
+def test_a_strong_score_still_consults_the_model(monkeypatch):
+    chunks = [chunk(1, score=0.9), chunk(2, score=0.4)]
+
+    grade, chain = _grade(chunks, monkeypatch)
+
+    assert chain.calls == 1
+    assert grade.sufficient is True
+
+
+def test_a_near_zero_score_counts_as_irrelevant(monkeypatch):
+    """Measured on the real corpus: an unrelated question tops out near 1e-05."""
+    chunks = [chunk(1, score=1.3e-05), chunk(2, score=1.2e-05)]
+
+    _grade_result, chain = _grade(chunks, monkeypatch)
+
+    assert chain.calls == 0
+
+
+def test_a_score_just_above_the_ceiling_still_consults_the_model(monkeypatch):
+    chunks = [chunk(1, score=0.01), chunk(2, score=0.005)]
+
+    _grade_result, chain = _grade(chunks, monkeypatch)
+
+    assert chain.calls == 1
+
+
+def test_the_skip_can_be_disabled(monkeypatch):
+    from src.config import get_settings
+
+    monkeypatch.setenv("EVIDENCE_IRRELEVANT_SCORE_CEILING", "0")
+    get_settings.cache_clear()
+    try:
+        _grade_result, chain = _grade([chunk(1, score=0.0)], monkeypatch)
+    finally:
+        get_settings.cache_clear()
+
+    assert chain.calls == 1
+
+
+def test_a_skipped_grading_call_is_not_counted_against_the_request(world, monkeypatch):
+    """`llm_calls_used` must report calls made, not slots reserved."""
+    from src.self_healing import evidence_grader
+
+    monkeypatch.setattr(graph_module, "grade_evidence", evidence_grader.grade_evidence)
+    monkeypatch.setattr(
+        evidence_grader, "_build_grader_chain", lambda **_k: _CountingChain({"sufficient": True})
+    )
+    world["retriever"] = StubRetriever([[chunk(1, score=0.0), chunk(2, score=0.0)]])
+
+    result = run(world)
+
+    # Three gradings decided without the provider; only the two rewrites called it.
+    assert result["llm_calls_used"] == 2
+    assert result["retry_count"] == 2

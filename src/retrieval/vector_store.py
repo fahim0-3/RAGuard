@@ -10,17 +10,22 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from collections.abc import Iterator, Sequence
+import time
+import weakref
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import psycopg
 from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
+from psycopg_pool import ConnectionPool, PoolTimeout
 
 from src.config import get_settings
 from src.retrieval.types import RetrievedChunk
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +33,30 @@ CHUNKS_TABLE = "chunks"
 
 _pool: ConnectionPool | None = None
 _pool_lock = threading.Lock()
+
+#: When each pooled connection was last handed back in a clean state. Weak
+#: keys, so a connection the pool discards takes its entry with it.
+_returned_at: weakref.WeakKeyDictionary[psycopg.Connection, float] = weakref.WeakKeyDictionary()
+
+
+def _mark_returned(conn: psycopg.Connection) -> None:
+    """Pool `reset` hook: record that this connection just worked."""
+    _returned_at[conn] = time.monotonic()
+
+
+def _check_if_idle(conn: psycopg.Connection) -> None:
+    """Validate a connection on checkout only if it may have gone stale.
+
+    A connection that completed a statement and came back seconds ago is
+    known good, and validating it costs a full network round trip. One
+    that has sat idle, or has never been returned, is checked as before.
+    Raising here makes the pool discard the connection and open another.
+    """
+    window = float(get_settings().db_checkout_validation_idle_s)
+    returned = _returned_at.get(conn)
+    if window > 0 and returned is not None and time.monotonic() - returned < window:
+        return
+    ConnectionPool.check_connection(conn)
 
 
 def _configure(conn: psycopg.Connection) -> None:
@@ -57,13 +86,25 @@ def get_pool() -> ConnectionPool:
                     kwargs={
                         "connect_timeout": settings.db_connect_timeout_s,
                         "autocommit": True,
+                        # A half-open socket (the server vanished without a
+                        # FIN) otherwise blocks a read until the OS gives up,
+                        # which can be hours; the server-side statement
+                        # timeout cannot fire on a server that is gone.
+                        # Keepalive probes turn that into an error in about a
+                        # minute, well inside the request budget.
+                        "keepalives": 1,
+                        "keepalives_idle": 30,
+                        "keepalives_interval": 10,
+                        "keepalives_count": 3,
                     },
                     configure=_configure,
                     # Managed databases such as Neon can close an idle
                     # connection while a local embedding model is loading.
                     # Validate on checkout so the pool replaces a dead socket
-                    # before application SQL sees it.
-                    check=ConnectionPool.check_connection,
+                    # before application SQL sees it — but only when the
+                    # connection has been idle long enough to be at risk.
+                    check=_check_if_idle,
+                    reset=_mark_returned,
                     open=True,
                 )
     return _pool
@@ -104,6 +145,11 @@ def init_schema() -> None:
     """Create the extension, table, and indexes. Safe to run repeatedly."""
     settings = get_settings()
     enable_vector_extension()
+    # A managed database may accept a direct bootstrap connection before the
+    # asynchronous runtime pool has opened its first connection.  Startup can
+    # wait through its reconnect window; normal requests still use the shorter
+    # `db_pool_timeout_s` checkout bound in `get_connection()`.
+    get_pool().wait(timeout=settings.db_reconnect_timeout_s)
     ddl = f"""
     CREATE TABLE IF NOT EXISTS {CHUNKS_TABLE} (
         id           BIGSERIAL PRIMARY KEY,
@@ -219,12 +265,103 @@ def fetch_all_chunks() -> list[RetrievedChunk]:
     ]
 
 
+def fetch_corpus_with_embeddings() -> tuple[list[RetrievedChunk], np.ndarray]:
+    """The whole corpus with its vectors, in `fetch_all_chunks` order.
+
+    One snapshot feeds both in-memory indexes, so BM25 and dense search
+    always describe the same rows and share the same chunk objects.
+    """
+    import numpy as np
+
+    sql = f"""
+        SELECT id, content, source, doc_id, chunk_index, metadata, embedding
+        FROM {CHUNKS_TABLE}
+        ORDER BY source, chunk_index
+    """
+    with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        rows = cur.execute(sql).fetchall()
+    chunks = [
+        RetrievedChunk(
+            chunk_id=row["id"],
+            content=row["content"],
+            source=row["source"],
+            doc_id=row["doc_id"] or "",
+            chunk_index=row["chunk_index"],
+            metadata=row["metadata"] or {},
+        )
+        for row in rows
+    ]
+    dimension = get_settings().vector_dimension
+    embeddings = (
+        np.vstack([_as_float32(row["embedding"]) for row in rows])
+        if rows
+        else np.zeros((0, dimension), dtype=np.float32)
+    )
+    return chunks, embeddings
+
+
+def _as_float32(value: Any) -> np.ndarray:
+    """pgvector's adapter yields `Vector` objects, not arrays; accept either."""
+    import numpy as np
+
+    to_numpy = getattr(value, "to_numpy", None)
+    array = to_numpy() if callable(to_numpy) else value
+    return np.asarray(array, dtype=np.float32)
+
+
+def corpus_fingerprint() -> str:
+    """A cheap signature that changes whenever any retrievable row changes.
+
+    The table has no update timestamp, and an upsert rewrites content and
+    vectors in place, so the signature digests the data itself: content,
+    metadata, document id and vector of every row, plus count and max id.
+    One small result row, so the freshness poll stays off the query path.
+    """
+    sql = f"""
+        SELECT count(*) AS n,
+               coalesce(max(id), 0) AS max_id,
+               md5(coalesce(string_agg(
+                   id::text || ':' || doc_id || ':' || md5(content) || ':'
+                   || md5(metadata::text) || ':' || md5(embedding::text),
+                   ',' ORDER BY id), '')) AS digest
+        FROM {CHUNKS_TABLE}
+    """
+    with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        row = cur.execute(sql).fetchone()
+    return f"{row['n']}:{row['max_id']}:{row['digest']}"
+
+
 def source_policy_ids() -> dict[str, str]:
     """Map each source filename to its document identifier, for example REF-001."""
     sql = f"SELECT DISTINCT source, doc_id FROM {CHUNKS_TABLE} ORDER BY source"
     with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         rows = cur.execute(sql).fetchall()
     return {row["source"]: row["doc_id"] or "" for row in rows}
+
+
+def _read_retrying_stale_connection(statement: Callable[[psycopg.Connection], Any]) -> Any:
+    """Run a read-only statement, retrying once if the connection died idle.
+
+    Checkout validation is skipped for recently used connections, so a
+    socket the database closed in between reaches the statement instead.
+    The pool discards a broken connection when it comes back, and the read
+    is idempotent, so it is retried once on another connection.
+
+    Two failures are deliberately not retried. A statement timeout is a slow
+    query, and repeating it only doubles the wait. A pool timeout means no
+    connection could be had at all, typically a database outage; retrying
+    it, or validating the pool against an unreachable server, is how a
+    request once spent over half an hour in retrieval.
+    """
+    try:
+        with get_connection() as conn:
+            return statement(conn)
+    except (psycopg.errors.QueryCanceled, PoolTimeout):
+        raise
+    except psycopg.OperationalError:
+        logger.warning("Pooled connection failed; retrying the read once")
+        with get_connection() as conn:
+            return statement(conn)
 
 
 def dense_search(query_embedding: Sequence[float], top_k: int) -> list[RetrievedChunk]:
@@ -239,8 +376,12 @@ def dense_search(query_embedding: Sequence[float], top_k: int) -> list[Retrieved
         LIMIT %s
     """
     vector = np.asarray(query_embedding, dtype=np.float32)
-    with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        rows = cur.execute(sql, (vector, vector, top_k)).fetchall()
+
+    def statement(conn: psycopg.Connection) -> list[dict[str, Any]]:
+        with conn.cursor(row_factory=dict_row) as cur:
+            return cur.execute(sql, (vector, vector, top_k)).fetchall()
+
+    rows = _read_retrying_stale_connection(statement)
     return [
         RetrievedChunk(
             chunk_id=row["id"],

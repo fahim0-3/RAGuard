@@ -78,6 +78,7 @@ class Local:
         self.load_error = None
 
     def warmup(self):
+        self.is_model_loaded = True
         return True
 
     def rerank_with_diagnostics(self, query, chunks, *, top_k, candidate_top_k):
@@ -414,12 +415,14 @@ def test_rrf_fallback_does_not_load_local_model_when_configured():
     assert local_creations == []
 
 
-def test_voyage_warmup_checks_configuration_without_a_network_call():
-    reranker = ConfiguredReranker(settings=settings())
+def test_voyage_warmup_loads_the_local_confidence_scorer_without_a_network_call():
+    local = Local()
+    reranker = ConfiguredReranker(settings=settings(), local_factory=lambda: local)
 
     assert reranker.warmup() is True
     assert reranker.is_model_loaded is True
     assert reranker.loaded_model_name == "rerank-2.5-lite"
+    assert local.is_model_loaded is True
 
 
 def test_settings_default_to_local_and_key_does_not_change_provider():
@@ -443,3 +446,198 @@ def test_timeout_response_is_recorded_without_exception_text():
 
     assert result.failure == "voyage_timeout"
     assert "secret endpoint detail" not in str(result.to_dict())
+
+
+# --------------------------------------------------------------------------
+# Overlapped local scoring: same scores, off the critical path
+# --------------------------------------------------------------------------
+
+
+class PairwiseLocal(Local):
+    """Scores depend only on the (query, chunk) pair, as a cross-encoder's do.
+
+    The positional scores of `Local` would make batch composition matter, which
+    is exactly the property that makes the overlap safe for the real model.
+    """
+
+    def __init__(self, *, degraded: bool = False):
+        super().__init__()
+        self.degraded = degraded
+        self.scored_ids: list[list[int]] = []
+
+    def score_fixed_order_with_diagnostics(self, query, chunks):
+        self.fixed_order_calls += 1
+        self.scored_ids.append([item.chunk_id for item in chunks])
+        if self.degraded:
+            return RerankResult(query=query, chunks=list(chunks), reranker_used=False)
+        scored = [
+            replace(
+                item,
+                rerank_score=item.chunk_id * 0.5,
+                normalised_rerank_score=sigmoid(item.chunk_id * 0.5),
+            )
+            for item in chunks
+        ]
+        return RerankResult(
+            query=query,
+            chunks=scored,
+            reranker_used=True,
+            model_name="m",
+            candidate_count=len(chunks),
+        )
+
+
+def _voyage_picks(indices: list[int]) -> Client:
+    return Client(
+        [
+            Response(
+                200,
+                {
+                    "data": [
+                        {"index": i, "relevance_score": 1.0 - n * 0.1}
+                        for n, i in enumerate(indices)
+                    ]
+                },
+            )
+        ]
+    )
+
+
+def _run(overlap: bool, local: PairwiseLocal):
+    reranker = ConfiguredReranker(
+        settings=settings(hosted_rerank_top_k=3, reranker_overlap_local_scoring=overlap),
+        local_factory=lambda: local,
+        voyage_factory=lambda **kwargs: VoyageReranker(client=_voyage_picks([4, 0, 2]), **kwargs),
+    )
+    try:
+        return reranker.rerank_with_diagnostics("q", [chunk(i) for i in range(1, 7)])
+    finally:
+        reranker.close()
+
+
+def test_overlapped_scoring_matches_the_sequential_pass_exactly():
+    sequential = _run(False, PairwiseLocal())
+    overlapped = _run(True, PairwiseLocal())
+
+    assert [c.chunk_id for c in overlapped.chunks] == [c.chunk_id for c in sequential.chunks]
+    assert [c.rerank_score for c in overlapped.chunks] == [
+        c.rerank_score for c in sequential.chunks
+    ]
+    assert [c.normalised_rerank_score for c in overlapped.chunks] == [
+        c.normalised_rerank_score for c in sequential.chunks
+    ]
+    assert overlapped.confidence_score_source == sequential.confidence_score_source
+    assert overlapped.provider_order == sequential.provider_order
+
+
+def test_overlap_scores_the_whole_pool_once_instead_of_after_voyage():
+    local = PairwiseLocal()
+
+    result = _run(True, local)
+
+    assert local.fixed_order_calls == 1
+    assert local.scored_ids == [[1, 2, 3, 4, 5, 6]], "the pool, scored while Voyage ran"
+    assert [c.chunk_id for c in result.chunks] == [5, 1, 3], "still Voyage's order"
+
+
+def test_a_degraded_prescore_falls_back_to_the_sequential_pass():
+    """A pre-score that cannot cover every pick must never reach the evidence gate."""
+    local = PairwiseLocal(degraded=True)
+
+    result = _run(True, local)
+
+    assert local.fixed_order_calls >= 2, "the sequential pass must run after a failed pre-score"
+    assert result.chunks
+
+
+def test_overlap_disabled_scores_only_voyages_picks():
+    local = PairwiseLocal()
+
+    _run(False, local)
+
+    assert local.scored_ids == [[5, 1, 3]]
+
+
+# --------------------------------------------------------------------------
+# Voyage cooldown: one hosted timeout, not one per request
+# --------------------------------------------------------------------------
+
+
+def _voyage_reranker(client, local, **overrides):
+    reranker = ConfiguredReranker(
+        settings=settings(hosted_rerank_cooldown_enabled=True, **overrides),
+        local_factory=lambda: local,
+        voyage_factory=lambda **kwargs: VoyageReranker(client=client, **kwargs),
+    )
+    now = [1_000.0]
+    reranker._clock = lambda: now[0]
+    return reranker, now
+
+
+def test_a_voyage_timeout_sends_the_next_request_straight_to_local():
+    import httpx as _httpx
+
+    client = Client([_httpx.TimeoutException("slow"), _httpx.TimeoutException("slow")])
+    local = Local()
+    reranker, _now = _voyage_reranker(client, local, hosted_rerank_max_retries=1)
+
+    first = reranker.rerank_with_diagnostics("q", [chunk(1), chunk(2)])
+    calls_after_first = len(client.calls)
+    second = reranker.rerank_with_diagnostics("q", [chunk(1), chunk(2)])
+
+    assert first.fallback_used is True
+    assert len(client.calls) == calls_after_first, "no second hosted timeout"
+    assert second.actual_provider == "local"
+    assert second.failure == "voyage_cooling_down"
+
+
+def test_voyage_is_tried_again_once_its_cooldown_expires():
+    import httpx as _httpx
+
+    client = Client(
+        [
+            _httpx.TimeoutException("slow"),
+            _httpx.TimeoutException("slow"),
+            Response(200, {"data": [{"index": 0, "relevance_score": 0.9}]}),
+        ]
+    )
+    reranker, now = _voyage_reranker(client, Local(), hosted_rerank_top_k=1)
+    reranker.rerank_with_diagnostics("q", [chunk(1)])
+
+    now[0] += 31.0
+    result = reranker.rerank_with_diagnostics("q", [chunk(1)])
+
+    assert result.actual_provider == "voyage"
+    assert result.reranker_used is True
+
+
+def test_a_malformed_voyage_body_does_not_open_the_circuit():
+    """A bad response is not an outage; the next request should still try Voyage."""
+    client = Client(
+        [
+            Response(200, {"data": "not-a-list"}),
+            Response(200, {"data": [{"index": 0, "relevance_score": 0.9}]}),
+        ]
+    )
+    reranker, _now = _voyage_reranker(client, Local(), hosted_rerank_top_k=1)
+    reranker.rerank_with_diagnostics("q", [chunk(1)])
+
+    result = reranker.rerank_with_diagnostics("q", [chunk(1)])
+
+    assert result.actual_provider == "voyage"
+
+
+def test_the_voyage_cooldown_can_be_disabled():
+    import httpx as _httpx
+
+    client = Client([_httpx.TimeoutException("slow")] * 4)
+    reranker = ConfiguredReranker(
+        settings=settings(hosted_rerank_cooldown_enabled=False, hosted_rerank_max_retries=1),
+        local_factory=Local,
+        voyage_factory=lambda **kwargs: VoyageReranker(client=client, **kwargs),
+    )
+
+    reranker.rerank_with_diagnostics("q", [chunk(1)])
+    reranker.rerank_with_diagnostics("q", [chunk(1)])
+
+    assert len(client.calls) == 4, "both requests tried Voyage twice"

@@ -123,3 +123,40 @@ def test_entailment_reserves_one_budgeted_call_per_claim():
 
     assert budget.llm_calls_used == 1
     assert budget.exhausted_stage == "verify_citations"
+
+
+# --------------------------------------------------------------------------
+# A reservation that turned out not to be needed
+# --------------------------------------------------------------------------
+
+
+def test_releasing_a_reservation_returns_the_slot():
+    """A node reserves before it knows whether it will call the provider."""
+    budget = ExecutionBudget(timeout_s=60, max_llm_calls=2)
+
+    budget.reserve_llm_call("evidence_grader", default_timeout_s=10)
+    assert budget.llm_calls_used == 1
+
+    budget.release_llm_call()
+
+    assert budget.llm_calls_used == 0
+    assert budget.snapshot()["llm_calls_used"] == 0
+
+
+def test_a_released_slot_is_available_to_a_later_stage():
+    budget = ExecutionBudget(timeout_s=60, max_llm_calls=1)
+    budget.reserve_llm_call("evidence_grader", default_timeout_s=10)
+    budget.release_llm_call()
+
+    permit = budget.reserve_llm_call("generate_answer", default_timeout_s=10)
+
+    assert permit.timeout_s > 0
+
+
+def test_releasing_more_than_reserved_never_goes_negative():
+    budget = ExecutionBudget(timeout_s=60, max_llm_calls=2)
+
+    budget.release_llm_call()
+    budget.release_llm_call()
+
+    assert budget.llm_calls_used == 0

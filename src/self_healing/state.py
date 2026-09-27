@@ -66,6 +66,14 @@ class EvidenceGrade(_Truncating):
     signals: dict[str, Any] = Field(default_factory=dict)
     #: True when no structured grader ran and the decision is deterministic.
     deterministic_only: bool = False
+    #: A non-empty value means the semantic grader did not complete.  This is
+    #: deliberately distinct from a completed grader deciding that evidence is
+    #: insufficient, because only the latter may enter the retrieval retry
+    #: loop.
+    failure_category: str = ""
+    failure_reason: str = ""
+    failure_phase: str = ""
+    failure_exception_type: str = ""
 
     @field_validator("confidence")
     @classmethod
@@ -75,6 +83,13 @@ class EvidenceGrade(_Truncating):
     @field_validator("rationale")
     @classmethod
     def _cap(cls, value: str) -> str:
+        return cls._short(value)
+
+    @field_validator(
+        "failure_category", "failure_reason", "failure_phase", "failure_exception_type"
+    )
+    @classmethod
+    def _cap_failure_metadata(cls, value: str) -> str:
         return cls._short(value)
 
     @field_validator("missing_information", mode="before")
@@ -140,6 +155,10 @@ class VerificationResult(_Truncating):
     unsupported_claim_count: int = 0
     uncited_claim_count: int = 0
     latency_ms: float = 0.0
+    #: True when a claim went unjudged because the entailment provider
+    #: failed. That is an operational failure, not evidence that the draft
+    #: is wrong, so it must not spend the regeneration budget.
+    judge_unavailable: bool = False
 
     @property
     def verification_reason(self) -> str:
@@ -225,6 +244,8 @@ class GraphState(TypedDict, total=False):
     llm_routing_mode: str
     llm_route_workload: str
     llm_fallbacks: list[str]
+    #: Providers the circuit breaker passed over for this request.
+    llm_skipped_providers: list[str]
 
     # Generation
     answer_draft: str
@@ -235,6 +256,12 @@ class GraphState(TypedDict, total=False):
     #: Phase E outcome string, used to distinguish a provider outage from an
     #: honest "the evidence does not cover this".
     generation_outcome: str
+    #: Why a draft was refused before verification, for example a claim list
+    #: that did not cover every answer sentence. Fed back into the one
+    #: permitted regeneration so the attempt is corrective, not identical.
+    generation_rejection: str
+    #: True when the draft came from generation started alongside grading.
+    generation_speculative: bool
 
     # Verification (Phase G plugs in here)
     verification_result: dict[str, Any]
@@ -294,11 +321,14 @@ def initial_state(
         llm_routing_mode=llm_routing_mode,
         llm_route_workload=llm_route_workload,
         llm_fallbacks=[],
+        llm_skipped_providers=[],
         answer_draft="",
         citations=[],
         claim_citations=[],
         answer_confidence=0.0,
         generation_outcome="",
+        generation_rejection="",
+        generation_speculative=False,
         verification_result={},
         final_outcome="error",
         final_answer="",

@@ -160,6 +160,15 @@ class QueryResponse(BaseModel):
     llm_calls_used: int = 0
     llm_call_limit: int = 0
     budget_exhausted: bool = False
+    # Operational routing facts, needed to tell a slow provider from a provider
+    # cascade. Values are a provider name and `provider:category` strings from
+    # a fixed vocabulary; no exception text, prompt, or passage reaches them.
+    llm_provider: str | None = None
+    llm_fallbacks: list[str] = Field(default_factory=list)
+    llm_skipped_providers: list[str] = Field(default_factory=list)
+    regeneration_count: int = 0
+    #: The draft came from generation overlapped with evidence grading.
+    speculative_generation: bool = False
 
 
 class HealthResponse(BaseModel):

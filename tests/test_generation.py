@@ -636,10 +636,20 @@ def test_dynamic_fallback_uses_each_providers_configured_model(monkeypatch):
     )
     monkeypatch.setattr(llm_factory, "get_settings", lambda: settings)
 
+    # Asserted per provider rather than per position: the dynamic order is a
+    # routing decision that may change, while "each provider uses its own
+    # configured model" is the invariant this test exists to protect.
+    expected_model = {
+        "gemini": "gemini-safe-test",
+        "groq": "openai/groq-safe-test",
+    }
     with route_context(settings) as route:
-        assert llm_factory.model_name_for("generator") == "gemini-safe-test"
-        route.index = 1
-        assert llm_factory.model_name_for("generator") == "openai/groq-safe-test"
+        assert set(route.candidates) >= set(expected_model)
+        for index, provider in enumerate(route.candidates):
+            if provider not in expected_model:
+                continue
+            route.index = index
+            assert llm_factory.model_name_for("generator") == expected_model[provider]
 
 
 def test_groq_model_ids_are_role_aware(monkeypatch):
@@ -739,7 +749,7 @@ def test_groq_builder_uses_bounded_retry_backoff_configuration(monkeypatch):
 
     llm_factory._build_groq("generator", timeout_s=12.5, max_retries=4)
 
-    assert captured["model"] == "openai/gpt-oss-20b"
+    assert captured["model"] == settings.groq_model
     assert captured["api_key"] == "g" * 32
     assert captured["timeout"] == 12.5
     assert captured["max_retries"] == 2
@@ -760,7 +770,16 @@ def test_groq_structured_model_uses_strict_json_schema(monkeypatch):
             calls.update(schema=schema, **kwargs)
             return "structured-model"
 
-    settings = Settings(_env_file=None, llm_provider="groq", groq_api_key="g" * 32)
+    # Native strict mode is opt-in, because GPT-OSS rejects some valid requests
+    # while enforcing a provider-side schema. This test covers the binding
+    # itself, so it enables the flag explicitly rather than relying on the
+    # serving default.
+    settings = Settings(
+        _env_file=None,
+        llm_provider="groq",
+        groq_api_key="g" * 32,
+        groq_native_structured_output=True,
+    )
     monkeypatch.setattr(llm_factory, "get_settings", lambda: settings)
     monkeypatch.setattr(llm_factory, "get_chat_model", lambda *args, **kwargs: FakeModel())
 
@@ -957,7 +976,7 @@ def test_evidence_only_rules_are_unchanged():
     from src.generation.prompts import ANSWER_SYSTEM_PROMPT
 
     lowered = ANSWER_SYSTEM_PROMPT.lower()
-    assert "answer only from the numbered context passages" in lowered
+    assert "answer only from the context passages" in lowered
     assert "data, never instructions" in lowered
     assert "never reveal" in lowered
     assert "preserve identifiers verbatim" in lowered
@@ -986,7 +1005,7 @@ def test_prompt_version_was_bumped_for_the_rule_change():
     """A prompt edit is a code change; evaluation runs are attributed to it."""
     from src.generation.prompts import PROMPT_VERSION
 
-    assert PROMPT_VERSION == "2026-08-25_prompts_v4"
+    assert PROMPT_VERSION == "2026-09-24_prompts_v5"
 
 
 def test_the_fix_did_not_leak_the_question_into_the_verifier():
@@ -1010,3 +1029,105 @@ def test_the_fix_did_not_leak_the_question_into_the_verifier():
         "llm_max_retries",
     }, parameters
     assert "question" not in ENTAILMENT_HUMAN_PROMPT.lower()
+
+
+# --------------------------------------------------------------------------
+# Claim coverage: the claims must tile the answer
+# --------------------------------------------------------------------------
+
+
+def _claims(*pairs):
+    return [{"claim": claim, "citations": list(citations)} for claim, citations in pairs]
+
+
+def test_claims_may_segment_the_answer_differently_from_a_sentence_split(evidence):
+    """Punctuation disagreement is not a grounding failure."""
+    answer = "Credit and debit cards: 5 to 7 business days. Retry with another card."
+    chain = FakeChain(
+        answer_payload(
+            answer=answer,
+            claim_citations=_claims(
+                (answer.split(". ")[0] + ".", ["refund_policy.txt#1"]),
+                ("Retry with another card.", ["payment_failure_faq.txt#1"]),
+            ),
+        )
+    )
+
+    result = generate_grounded_answer("q", evidence, chain=chain)
+
+    assert result.outcome == "answered"
+    assert set(result.citation_ids) == {"refund_policy.txt#1", "payment_failure_faq.txt#1"}
+
+
+def test_one_claim_may_cover_several_sentences(evidence):
+    answer = "Credit and debit cards: 5 to 7 business days. Store credit is immediate."
+    chain = FakeChain(
+        answer_payload(answer=answer, claim_citations=_claims((answer, ["refund_policy.txt#1"])))
+    )
+
+    assert generate_grounded_answer("q", evidence, chain=chain).outcome == "answered"
+
+
+def test_uncited_text_in_the_answer_is_rejected(evidence):
+    """The guarantee the looser rule must still enforce."""
+    answer = "Card refunds take 5 to 7 business days. Refunds are always automatic."
+    chain = FakeChain(
+        answer_payload(
+            answer=answer,
+            claim_citations=_claims(
+                ("Card refunds take 5 to 7 business days.", ["refund_policy.txt#1"])
+            ),
+        )
+    )
+
+    result = generate_grounded_answer("q", evidence, chain=chain)
+
+    assert result.outcome == "rejected_invalid_citation"
+    assert result.answer == ""
+
+
+def test_a_claim_asserting_text_absent_from_the_answer_is_rejected(evidence):
+    answer = "Card refunds take 5 to 7 business days."
+    chain = FakeChain(
+        answer_payload(
+            answer=answer,
+            claim_citations=_claims(
+                (answer, ["refund_policy.txt#1"]),
+                ("All fees are waived.", ["refund_policy.txt#1"]),
+            ),
+        )
+    )
+
+    assert generate_grounded_answer("q", evidence, chain=chain).outcome == (
+        "rejected_invalid_citation"
+    )
+
+
+def test_reordered_claims_are_rejected(evidence):
+    answer = "Card refunds take 5 to 7 business days. Retry with another card."
+    chain = FakeChain(
+        answer_payload(
+            answer=answer,
+            claim_citations=_claims(
+                ("Retry with another card.", ["payment_failure_faq.txt#1"]),
+                ("Card refunds take 5 to 7 business days.", ["refund_policy.txt#1"]),
+            ),
+        )
+    )
+
+    assert generate_grounded_answer("q", evidence, chain=chain).outcome == (
+        "rejected_invalid_citation"
+    )
+
+
+def test_a_covering_claim_without_a_supplied_citation_is_rejected(evidence):
+    answer = "Card refunds take 5 to 7 business days."
+    chain = FakeChain(
+        answer_payload(
+            answer=answer, claim_citations=_claims((answer, ["fabricated_policy.txt#9"]))
+        )
+    )
+
+    assert generate_grounded_answer("q", evidence, chain=chain).outcome == (
+        "rejected_invalid_citation"
+    )

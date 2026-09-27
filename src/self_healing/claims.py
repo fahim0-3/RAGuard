@@ -169,10 +169,22 @@ def extract_claims(
 ) -> list[Claim]:
     """Split an answer into typed, citation-bearing claims.
 
-    Every claim inherits the answer's citation list. The generator cites for the
-    answer as a whole rather than per sentence, so a claim is checked against
-    all cited passages collectively — which is also what lets one claim be
-    supported by two chunks at once.
+    Verification is always per sentence. When the generator supplied a claim
+    map, each mapped segment is split into its own sentences and every one of
+    them inherits that segment's citations, so a segment covering several
+    sentences is still judged sentence by sentence. That matters: the generator
+    is allowed to group sentences when it cites them, and without this split a
+    single segment covering the whole answer would be waved through as one
+    loose paragraph-level check.
+
+    Previously the map was matched positionally against a sentence split of the
+    answer, and any segment that did not correspond one-to-one with a sentence
+    silently became uncited and therefore unsupported. That rejected correct,
+    fully cited answers purely because the model grouped two sentences.
+
+    Without a map, every sentence inherits the answer's citation list, so a
+    claim is checked against all cited passages collectively — which is also
+    what lets one claim be supported by two chunks at once.
     """
     labels = list(citation_labels or [])
     mappings = list(claim_citations or [])
@@ -180,29 +192,37 @@ def extract_claims(
     if not text:
         return []
 
-    claims: list[Claim] = []
-    for index, sentence in enumerate(_SENTENCE_SPLIT.split(text), start=1):
-        sentence = sentence.strip()
-        if _ACKNOWLEDGEMENT.fullmatch(sentence):
-            continue
-        mapped_labels = labels
-        if mappings:
-            mapping = mappings[index - 1] if index - 1 < len(mappings) else {}
+    if mappings:
+        segments: list[tuple[str, list[str]]] = []
+        for mapping in mappings:
             values = claim_citation_values(mapping)
-            if values is None or " ".join(values[0].split()) != sentence:
-                # A malformed map fails closed as an uncited claim.
-                mapped_labels = []
-            else:
-                raw_labels = values[1]
-                mapped_labels = [label for label in raw_labels if isinstance(label, str)]
-        claim_type = classify(sentence)
-        claims.append(
-            Claim(
-                claim_id=f"c{index}",
-                claim_text=sentence,
-                citation_labels=mapped_labels,
-                claim_type=claim_type,
-                required_tokens=_required_tokens(sentence, claim_type),
+            if values is None:
+                continue
+            segment_text = " ".join(values[0].split())
+            if not segment_text:
+                continue
+            # A malformed label list fails closed: the segment stays, uncited.
+            segment_labels = [label for label in values[1] if isinstance(label, str)]
+            segments.append((segment_text, segment_labels))
+    else:
+        segments = [(" ".join(text.split()), labels)]
+
+    claims: list[Claim] = []
+    index = 0
+    for segment_text, segment_labels in segments:
+        for sentence in _SENTENCE_SPLIT.split(segment_text):
+            sentence = sentence.strip()
+            if not sentence or _ACKNOWLEDGEMENT.fullmatch(sentence):
+                continue
+            index += 1
+            claim_type = classify(sentence)
+            claims.append(
+                Claim(
+                    claim_id=f"c{index}",
+                    claim_text=sentence,
+                    citation_labels=list(segment_labels),
+                    claim_type=claim_type,
+                    required_tokens=_required_tokens(sentence, claim_type),
+                )
             )
-        )
     return claims

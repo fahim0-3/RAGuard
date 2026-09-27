@@ -20,6 +20,7 @@ __all__ = [
     "LLMCallPermit",
     "current_budget",
     "ensure_time_remaining",
+    "release_llm_call",
     "remaining_seconds",
     "request_budget",
     "reserve_llm_call",
@@ -98,6 +99,18 @@ class ExecutionBudget:
             timeout_s = max(0.001, min(float(default_timeout_s), remaining))
             return LLMCallPermit(timeout_s=timeout_s, max_retries=0)
 
+    def release_llm_call(self) -> None:
+        """Hand back a reserved slot that turned out not to be needed.
+
+        A node reserves before it knows whether a provider call will be
+        made, because the permit carries the timeout the call would use.
+        When the node then answers without the provider, keeping the slot
+        would both over-report `llm_calls_used` and deny a later stage a
+        call the request never spent.
+        """
+        with self._lock:
+            self.llm_calls_used = max(0, self.llm_calls_used - 1)
+
     def snapshot(self) -> dict[str, object]:
         elapsed_ms = max(0.0, (self.clock() - self.started_monotonic) * 1000.0)
         return {
@@ -127,6 +140,13 @@ def request_budget(budget: ExecutionBudget) -> Iterator[ExecutionBudget]:
         yield budget
     finally:
         _CURRENT_BUDGET.reset(token)
+
+
+def release_llm_call() -> None:
+    """Return an unused reservation to the active request, if there is one."""
+    budget = current_budget()
+    if budget is not None:
+        budget.release_llm_call()
 
 
 def reserve_llm_call(

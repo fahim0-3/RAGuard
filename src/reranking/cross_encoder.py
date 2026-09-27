@@ -42,6 +42,7 @@ from __future__ import annotations
 import inspect
 import logging
 import math
+import os
 import threading
 import time
 from dataclasses import dataclass, field, replace
@@ -191,8 +192,15 @@ class CrossEncoderReranker:
         """Construct the underlying model. Overridden in tests."""
         from sentence_transformers import CrossEncoder
 
+        if get_settings().local_model_offline:
+            os.environ["HF_HUB_OFFLINE"] = "1"
         logger.info("Loading cross-encoder %s on %s", model_name, self.device)
-        return CrossEncoder(model_name, device=self.device, max_length=self.max_length)
+        return CrossEncoder(
+            model_name,
+            device=self.device,
+            max_length=self.max_length,
+            local_files_only=get_settings().local_model_offline,
+        )
 
     def _configure_cpu_threads(self) -> None:
         """Apply an explicit CPU-thread ceiling only when an operator chose one."""
