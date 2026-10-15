@@ -20,7 +20,7 @@ A normal retrieval-augmented application can retrieve related text and still pro
 
 ## Highlights
 
-- **Hybrid retrieval:** local BGE-M3 embeddings, BM25, reciprocal-rank fusion, deduplication, and pgvector persistence.
+- **Hybrid retrieval:** local BGE-M3 or hosted Gemini embeddings, BM25, reciprocal-rank fusion, deduplication, and pgvector persistence.
 - **Fast warm-path retrieval:** an in-memory dense index and prebuilt BM25 index avoid database round trips for the compact demonstration corpus.
 - **Evidence-first generation:** deterministic signals and structured evidence grading block unsupported generation.
 - **Citation verification:** validates cited labels, policy identifiers, and numeric claims against retrieved passages.
@@ -68,7 +68,7 @@ These figures describe one local warm run, not a cloud-service guarantee. Provid
 | Area | Tools |
 | --- | --- |
 | API and workflow | Python, FastAPI, Pydantic, LangGraph |
-| Retrieval | PostgreSQL, pgvector, BM25, BGE-M3, RRF |
+| Retrieval | PostgreSQL, pgvector, BM25, BGE-M3 or hosted Gemini, RRF |
 | Reranking | SentenceTransformers cross-encoder, optional Voyage AI or Cohere |
 | Generation | Groq, Gemini, OpenRouter, or Ollama |
 | Frontend | Streamlit |
@@ -152,10 +152,11 @@ If Voyage is rate limited, unavailable, cooling down, or not configured, RAGuard
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\run-native.ps1 -Task setup-db
+powershell -ExecutionPolicy Bypass -File .\scripts\run-native.ps1 -Task check-db
 powershell -ExecutionPolicy Bypass -File .\scripts\run-native.ps1 -Task ingest -Reset
 ```
 
-The current demonstration corpus contains nine synthetic policy documents, covering refunds, returns, deliveries, damage, payments, warranties, promotions, and account/privacy requests.
+The current demonstration corpus contains nine synthetic policy documents, covering refunds, returns, deliveries, damage, payments, warranties, promotions, product manuals, and account/privacy requests.
 
 ### 4. Run the application
 
@@ -226,7 +227,7 @@ Representative response fields:
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Latest local validation: **998 passed, 137 deselected, 10 dependency warnings**. The warnings come from FastAPI/Starlette dependency deprecations and do not represent failing tests.
+Latest local validation: **1,026 passed, 143 deselected, 10 dependency warnings** (out of 1,169 collected tests). The warnings come from FastAPI/Starlette dependency deprecations and do not represent failing tests.
 
 ### Latency benchmark
 
@@ -271,10 +272,20 @@ Useful evaluation patterns:
 | `GET /ready` | Database, corpus, model, and reranker readiness |
 | `GET /config` | Safe active configuration summary |
 | `POST /query` | Grounded policy question answering |
-| `GET /admin/metrics` | Protected operational metrics |
+| `POST /retrieve` | Diagnostic retrieval and reranking without LLM generation (protected) |
 | `POST /admin/reindex` | Protected corpus-index refresh |
+| `POST /admin/warmup` | Protected pre-warming of embedding and reranker models |
+| `GET /admin/metrics` | Protected operational metrics |
+| `GET /metrics` | Protected Prometheus scrape output |
 
 Administrative endpoints require the `X-Admin-Key` request header and the `ADMIN_API_KEY` configured on the API server.
+
+## Container and deployment options
+
+While local development uses `run-native.ps1`, the repository includes containerization and remote deployment targets:
+
+- **Docker Compose:** `docker-compose.yml` runs PostgreSQL/pgvector alongside the API and frontend. GPU and Codespaces variants are provided in `docker-compose.gpu.yml` and `docker-compose.codespaces.yml`.
+- **Production targets:** Dockerfiles for both services (`Dockerfile` and `Dockerfile.frontend`) and a Render blueprint (`render.yaml`). See [deploy/README.md](deploy/README.md) for the preflight checks and migration contract (`src.maintenance.migrate`).
 
 ## Design decisions
 
